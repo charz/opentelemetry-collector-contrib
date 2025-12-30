@@ -14,7 +14,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/receiver"
-	"go.opentelemetry.io/collector/receiver/scrapererror"
+	"go.opentelemetry.io/collector/scraper/scrapererror"
 	"go.uber.org/zap"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/bigipreceiver/internal/metadata"
@@ -49,7 +49,7 @@ func newScraper(logger *zap.Logger, cfg *Config, settings receiver.Settings) *bi
 // start initializes a new big-ip client for the scraper
 func (s *bigipScraper) start(ctx context.Context, host component.Host) (err error) {
 	s.client, err = newClient(ctx, s.cfg, host, s.settings, s.logger)
-	return
+	return err
 }
 
 // scrape collects and creates OTEL metrics from a Big-IP environment

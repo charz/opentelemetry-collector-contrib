@@ -7,6 +7,613 @@ If you are looking for user-facing changes, check out [CHANGELOG.md](./CHANGELOG
 
 <!-- next version -->
 
+## v0.142.0
+
+### 🛑 Breaking changes 🛑
+
+- `all`: It's recommended to change the field type in your component configuration to be `configoptional.Optional[exporterhelper.QueueBatchConfig]` to keep the `enabled` subfield. Use configoptional.Some(exporterhelper.NewDefaultQueueConfig()) to enable by default. Use configoptional.Default(exporterhelper.NewDefaultQueueConfig()) to disable by default. (#44320)
+- `pkg/pdatatest`: apply recent breaking changes to pprofiletest (#44758)
+
+### 🚩 Deprecations 🚩
+
+- `pkg/ottl`: Use pointer when passing TransformContext around or calling into. (#44541)
+  Change Expr/Parser/Getter/Setter and all ottl related funcs to accept pointers to avoid unnecessary copy of a large
+  TransformContext(96B). Avoid allocating a new pcommon.Map every time a new context is created by using a Borrow/Return
+  pattern and reuse objects between calls. Deprecated funcs are:
+  - `ottldatapoint.NewTransformContext` in favor of `ottldatapoint.NewTransformContextPtr`;
+  - `ottllog.NewTransformContext` in favor of `ottllog.NewTransformContextPtr`;
+  - `ottlmetric.NewTransformContext` in favor of `ottlmetric.NewTransformContextPtr`;
+  - `ottlspan.NewTransformContext` in favor of `ottlspan.NewTransformContextPtr`;
+  - `ottlspanevent.NewTransformContext` in favor of `ottlspanevent.NewTransformContextPtr`;
+  - `filterprocessor.WithResourceFunctions` in favor of `filterprocessor.WithResourceFunctionsNew`
+  - `filterprocessor.DefaultDataPointFunctions` in favor of `filtermprocessor.DefaultDataPointFunctionsNew`
+  - `filterprocessor.WithDataPointFunctions` in favor of `filterprocessor.WithDataPointFunctionsNew`
+  - `filterprocessor.DefaultLogFunctions` in favor of `filterprocessor.DefaultLogFunctionsNew`
+  - `filterprocessor.WithLogFunctions` in favor of `filterprocessor.WithLogFunctionsNew`
+  - `filterprocessor.DefaultMetricFunctions` in favor of `filterprocessor.DefaultMetricFunctionsNew`
+  - `filterprocessor.WithMetricFunctions` in favor of `filterprocessor.WithMetricFunctionsNew`
+  - `filterprocessor.DefaultSpanFunctions` in favor of `filterprocessor.DefaultSpanFunctionsNew`
+  - `filterprocessor.WithSpanFunctions` in favor of `filterprocessor.WithSpanFunctionsNew`
+  - `filtermprocessor.DefaultSpanEventFunctions` in favor of `filtermprocessor.DefaultSpanEventFunctionsNew`
+  - `filtermprocessor.WithSpanEventFunctions` in favor of `filtermprocessor.WithSpanEventFunctionsNew`
+  - `transformprocessor.DefaultDataPointFunctions` in favor of `transformprocessor.DefaultDataPointFunctionsNew`
+  - `transformprocessor.WithDataPointFunctions` in favor of `transformprocessor.WithDataPointFunctionsNew`
+  - `transformprocessor.DefaultLogFunctions` in favor of `transformprocessor.DefaultLogFunctionsNew`
+  - `transformprocessor.WithLogFunctions` in favor of `transformprocessor.WithLogFunctionsNew`
+  - `transformprocessor.DefaultMetricFunctions` in favor of `transformprocessor.DefaultMetricFunctionsNew`
+  - `transformprocessor.WithMetricFunctions` in favor of `transformprocessor.WithMetricFunctionsNew`
+  - `transformprocessor.DefaultSpanFunctions` in favor of `transformprocessor.DefaultSpanFunctionsNew`
+  - `transformprocessor.WithSpanFunctions` in favor of `transformprocessor.WithSpanFunctionsNew`
+  - `transformprocessor.DefaultSpanEventFunctions` in favor of `transformprocessor.DefaultSpanEventFunctionsNew`
+  - `transformprocessor.WithSpanEventFunctions` in favor of `transformprocessor.WithSpanEventFunctionsNew`
+  
+
+### 💡 Enhancements 💡
+
+- `exporter/datadog`: introduce a container tags buffer in the stats writer, which is disabled by default. (#44661)
+- `pkg/ottl`: Add PSliceGetSetter interface to allow OTTL functions to accept typed accessors for `pcommon.Slice` paths. (#44421)
+
+<!-- previous-version -->
+
+## v0.141.0
+
+### 🛑 Breaking changes 🛑
+
+- `all`: fix pprofile DurationNano to be a TypeUint64 (#44397)
+- `processor/tail_sampling`: Remove only internally relevant fields from samplingpolicy.TraceData. (#44435)
+- `processor/tail_sampling`: Simplify the locking used by the tail sampling (#41656, #43671)
+  There are two small breaking changes as part of this work:
+  1. Pending traces are now passed through the decision logic during shutdown by default. If this is not desired it can be turned off using `drop_pending_traces_on_shutdown`.
+  2. The mutex in `samplingpolicy.TraceData` has been removed and `samplingpolicy.SpanCount` is now an `int64` instead of `*atomic.Int64`. Custom extensions using these fields will need to be updated.
+  
+
+### 🚩 Deprecations 🚩
+
+- `pkg/translator/opencensus`: Deprecate the package (#44641)
+
+### 🧰 Bug fixes 🧰
+
+- `pkg/ottl`: Return errors when OTTL context setters receive values of the wrong type (#40198)
+  Introduces `ctxutil.ExpectType` and updates log, metric, and scope setters to surface type assertion failures.
+  
+
+<!-- previous-version -->
+
+## v0.140.1
+
+<!-- previous-version -->
+
+## v0.140.0
+
+### 🛑 Breaking changes 🛑
+
+- `receiver/carbon`: unexport structs ParsedPath, PlaintextPathParser, function NewParser (#43966)
+- `receiver/carbon`: Unexport PathParserHelper (#43997)
+- `receiver/googlecloudpubsub`: Delete and inline functions used for tests (#43964)
+
+### 💡 Enhancements 💡
+
+- `pkg/datadog`: add orchestrator explorer support in pkg/datadog/config (#44105)
+- `pkg/datadog`: Expose NewConnectorFactory method to instantiate the Datadog connector with injected dependencies. (#43980)
+
+### 🧰 Bug fixes 🧰
+
+- `pkg/translator/zipkin`: Restore Zipkin->OTLP translation API (#44004)
+- `receiver/vcenter`: Skip vSAN collection and logging when all vSAN metrics are disabled (#38489)
+
+<!-- previous-version -->
+
+## v0.139.0
+
+### 🛑 Breaking changes 🛑
+
+- `cmd/opampsupervisor`: Remove common package, moving code where it is used instead. (#43885)
+- `extension/sumologic`: Move api and credentials packages to internal (#43789)
+- `pkg/translator/zipkin`: Unexport ToTranslator (#43852)
+- `receiver/aerospike`: Unexport mocks (#43788)
+- `receiver/azuremonitor`: unexport NewMutexMapImpl and NewSyncMapImpl (#43925)
+- `receiver/jmx`: unexport InsertDefault (#43965)
+
+<!-- previous-version -->
+
+## v0.138.0
+
+### 🛑 Breaking changes 🛑
+
+- `exporter/tencentcloud_logservice`: Unexport Log_Content, LogTag, Log, LogGroupList, LogGroup (#43138)
+- `pkg/datadog`: Move feature gates ReceiveResourceSpansV2FeatureGate, OperationAndResourceNameV2FeatureGate, and MetricRemappingDisabledFeatureGate from pkg/datadog to new submodule pkg/datadog/featuregates (#43631)
+
+### 🚩 Deprecations 🚩
+
+- `pkg/datadog`: Remove `logs::dump_payloads` config option from `pkg/datadog` config. (#43427)
+
+### 💡 Enhancements 💡
+
+- `pkg/ottl`: Add support for literal getters (#40222)
+  This enhancement introduces the `ottl.GetLiteralValue` function to OTTL, enabling compile-time optimization for getters that 
+  contain literal values. When a getter is identified as containing a literal value, OTTL functions can now access that value 
+  at build time rather than runtime, improving performance for common use cases like pattern matching with static strings.
+  
+- `processor/filter`: Add profiles support (#42762)
+- `receiver/hostmetrics`: Add metrics, Linux scraper, and tests to hostmetricsreceiver's nfsscraper (#40134)
+
+<!-- previous-version -->
+
+## v0.137.0
+
+### 🛑 Breaking changes 🛑
+
+- `libhoneyreceiver`: Unexport JSONEncoder (#43133)
+
+### 🚩 Deprecations 🚩
+
+- `pkg/datadog, exporter/datadog, extension/datadog`: Deprecates StaticAPIKeyCheck, stops doing validation for API key characters in Datadog exporter and extension. (#42677)
+  This was causing issues to users since validation of secrets is challenging
+  
+
+### 💡 Enhancements 💡
+
+- `pkg/ottl`: Create ctxprofilecommon for common attribute handling in various profiling sub messages (#42107)
+- `logicmonitorexporter`: Send log level along with log data (#41923)
+
+<!-- previous-version -->
+
+## v0.136.0
+
+### 🛑 Breaking changes 🛑
+
+- `datadogexporter`: Deprecate zorkian codepath (#17373)
+  Feature gate exporter.datadogexporter.metricexportnativeclient is now deprecated; the default metrics exporter is now 
+  Metrics Export Serializer unless feature gate exporter.datadogexporter.metricexportserializerclient is disabled. 
+  See https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/tag/v0.122.0 and #37930 for more 
+  info about Metrics Export Serializer. 
+  
+- `pkg/translator/prometheusremotewrite`: Function 'OtelMetricsToMetadata' now returns an error if unable to convert a metric to metadata (#42493)
+
+<!-- previous-version -->
+
+## v0.135.0
+
+### 💡 Enhancements 💡
+
+- `datadog`: remove references to `DataDog/opentelemetry-mapping-go` library in favor of `DataDog/datadog-agent/pkg/opentelemetry-mapping-go` (#42475)
+  No change to end user behavior.
+
+<!-- previous-version -->
+
+## v0.134.0
+
+<!-- previous-version -->
+
+## v0.133.0
+
+### 🛑 Breaking changes 🛑
+
+- `signaltometricsconnector`: Use configoptional for optional metric fields (#41922)
+- `azureauthextension`: Use configoptional for optional fields in azureauthextension config. (#41926)
+- `libhoneyreceiver`: Use configoptional for HTTP config in libhoneyreceiver (#41974)
+- `sumologicprocessor`: Remove unnecessary pointer for types in configuration struct. (#41928)
+- `receiver/prometheus`: Use configoptional for optional fields (#42140)
+- `prometheusremotewriteexporter`: Use configoptional for WAL configuration (#41980)
+- `jaegerreceiver`: Use configoptional for optional protocol sections. (#41982)
+- `pulsarreceiver`: Use configoptional for optional authentication fields. (#41920)
+- `awscloudwatchreceiver`: Remove pointer from type of config (#41975)
+- `mongodbatlasreceiver`: Use configoptional and remove pointer for Config fields (#41939)
+- `solacereceiver`: Use configoptional for optional types (#41977)
+- `spanmetricsconnector`: Use configoptional for optional fields (#41941)
+
+### 🚩 Deprecations 🚩
+
+- `opencensusreceiver, opencensusexporter`: Deprecate opencensusreceiver and opencensusexporter. (#36791)
+
+### 💡 Enhancements 💡
+
+- `filterprocessor`: Create `With*Functions` factory options to provide custom OTTL functions for logs, metrics or traces to the resulting filter processor. (#40948)
+- `oidcauthextension`: Add support for accessing custom JWT claims. (#41449)
+  Users can now access JWT claims from OIDC Auth context allowing dynamic processing based on received JWT token.
+  
+
+<!-- previous-version -->
+
+## v0.132.0
+
+### 🛑 Breaking changes 🛑
+
+- `journaldreceiver`: Unexport ReceiverType (#40666)
+- `pulsarexporter`: Use `configoptional.Optional` for authentication fields (#41723)
+- `exporter/loadbalancingexporter`: Use `configoptional` for optional config sections (#41697)
+
+### 💡 Enhancements 💡
+
+- `pkg/ottl`: Add OTTL support for sample submessage of OTel Profiling signal. (#40161)
+- `internal/common`: Add a priority queue implementation to the common package. (#41755)
+
+<!-- previous-version -->
+
+## v0.131.0
+
+### 🛑 Breaking changes 🛑
+
+- `metricstransformprocessor`: Unexport Operation, ValueAction, FilterConfig (#40657)
+- `oidcauthextension`: Unexport ProviderContainer (#41633)
+- `pkg/ottl`: Remove experimental transform context option `WithCache` from OTTL Profile context. (#41277)
+- `tailsamplingprocessor`: Latency config name change from `UpperThresholdmsMs` to `UpperThresholdMs` (#41563)
+- `awskinesisexporter`: Unexport Exporter (#40645)
+- `deltatocumulativeprocessor`: Unexport Processor,CountingSink (#40656)
+- `datasetexporter`: Unexport DatasetExporter, ExporterConfig (#40649)
+
+### 💡 Enhancements 💡
+
+- `oidcauthextension`: Add support for multiple OIDC providers. (#40854)
+  Users can now configure multiple OIDC providers in the OIDC Auth extension. Tokens will
+  be matched to a provider based on the `iss` claim.
+  
+- `pkg/ottl`: Add support for combining `scope` with other OTTL contexts. (#39308)
+  Previously, OTTL paths could only use the `instrumentation_scope` context when combined with 
+  lower-level contexts like `log` or `metric`. This change allows the `scope` context to be 
+  used interchangeably with `instrumentation_scope`, improving flexibility and consistency.
+  
+
+<!-- previous-version -->
+
+## v0.130.0
+
+### 🛑 Breaking changes 🛑
+
+- `splunkhecexporter`: Update 'batcher' config to use internal deprecated struct instead of the one removed from the core. (#41224)
+- `elasticsearchexporter`: Update 'batcher' config to use internal struct instead of the one removed from the core. (#41225)
+- `sumologicprocessor`: Types that do not contribute to intended API surface will be unexported (#40660)
+  https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/40641
+
+### 💡 Enhancements 💡
+
+- `pkg/ottl`: Add a `GetOr` function to `ottl.Optional` to return a default value when the optional is empty. (#40243)
+- `metricstarttimeprocessor`: Add the start_time_metric, which sets the start time based on another metric in the batch of metrics. (#38383)
+
+<!-- previous-version -->
+
+## v0.129.0
+
+### 🛑 Breaking changes 🛑
+
+- `azuremonitorexporter`: Unexport MessagingAttributes,ExceptionAttributes,DatabaseAttributes,RPCAttributes,HTTPAttributes,ConnectionVars,NetworkAttributes (#40648)
+- `sentryexporter`: unexport structs and methods which should be private (#40651)
+- `datadogreceiver`: Unexport `Endpoint` struct (#40663)
+- `azureeventhubreceiver`: Unexport AzureResourceLogsEventUnmarshaler (#40661)
+- `kineticaexporter`: unexport structs (#40680)
+  ｜ unexport SumScopeAttribute,ExponentialHistogramResourceAttribute,ExponentialHistogramDataPointAttribute, SummaryResourceAttribute,SummaryDataPointAttribute,Summary,HistogramScopeAttribute,HistogramDatapointExplicitBound, Histogram,GaugeScopeAttribute,ExponentialHistogramDataPointExemplarAttribute,ValueTypePair,HistogramDatapointExemplar, GaugeDataPointExemplarAttribute,HistogramDatapointBucketCount,HistogramDataPointAttribute,GaugeDatapointAttribute, ExponentialHistogramDatapoint,ExponentialHistogram,SumResourceAttribute,SumDatapoint,SummaryDatapointQuantileValues, Sum,KiWriter,HistogramResourceAttribute,HistogramDatapoint,GaugeResourceAttribute,GaugeDatapointExemplar, ExponentialHistogramBucketNegativeCount,SumDataPointExemplarAttribute,GaugeDatapoint,Gauge,ExponentialHistogramScopeAttribute, ExponentialHistogramBucketPositiveCount,AttributeValue,SummaryScopeAttribute,SumDatapointExemplar,SumDataPointAttribute, HistogramDataPointExemplarAttribute,ExponentialHistogramDatapointExemplar,SummaryDatapoint
+- `mysqlreceiver`: Unexport TableStats,TableIoWaitsStats,StatementEventStats,ReplicaStatusStats,IoWaitsStats,IndexIoWaitsStats,MySQLTestConfig structs from mysqlreceiver (#40671)
+- `sumologicextension`: Unexport ErrorAPI (#40655)
+- `prometheusremotewritereceiver`: Unexport MockConsumer,MetricIdentity structs (#40673)
+- `snmpreceiver`: Unexport SNMPData (#40543)
+- `azuredataexplorerexporter`: Unexport Status, Link, AdxTrace, AdxLog, Event, AdxMetric (#40647)
+- `bearertokenauthextension`: Unexport BearerAuthRoundTripper,PerRPCAuth,BearerTokenAuth (#40652)
+- `podmanreceiver`: Unexport ContainerScraper (#40672)
+- `alibabacloudlogserviceexporter`: Unexport KeyValues,KeyValue structs (#40644)
+- `libhoneyreceiver`: remove unused EnvironmentInfo,AuthInfo,TeamInfo (#40669)
+
+### 💡 Enhancements 💡
+
+- `hostmetricsreceiver`: Skeleton nfsscraper -- adds Linux nfs and nfsd metrics from /proc (#39978)
+- `sqlserverreceiver`: do not export Item struct (#40676)
+- `transformprocessor`: Create `With*Functions` factory options to provide custom OTTL functions for logs, metrics or traces to the resulting transform processor. (#39698)
+- `pkg/datadog`: Exposes 'SerializerWithForwarder' interface to allow for direct interaction with the underlying forwarder's lifecycle methods. (#40637)
+- `pkg/datadog`: Creates `agentcomponents` package to be used in Datadog components that rely on external dependencies. (#40532, #40556, #40560)
+  Deprecates `datadog.Zaplogger` in favor of `agentcomponents.ZapLogger`.
+- `pkg/ottl`: Add context inference support for OTTL value expressions (#39158)
+- `pkg/ottl`: Add new ContainsValue converter to check whether a value is present in a slice. (#30420)
+  Add `ottl.PSliceGetter`, a typed getter for `pcommon.Slice`
+  
+- `postgresqlreceiver`: Adopt mdatagen events for postgresqlreceiver. (#40549)
+- `sqlqueryreceiver`: Add SQL connection fields `host`, `port`, `database`, `username`, `password`, and `additional_params`. (#39760)
+  These options can be used instead of the existing `datasource` configuration option.
+
+<!-- previous-version -->
+
+## v0.128.0
+
+### 🛑 Breaking changes 🛑
+
+- `prometheusremoteexporter`: Delete unused struct `CreatedMetric` (#40266)
+- `k8slogreceiver`: Unexport DockerConfig and CRIConfig (#40274)
+- `several`: Rename fields named `TLSSetting` to `TLS` for consistency with the core repository. (#40452)
+  This change affects the following components:
+    - exporter/datadogexporter
+    - exporter/signalfxexporter
+    - exporter/syslogexporter
+    - extension/awsproxy
+    - extension/oauth2clientauthextension
+    - extension/opampextension
+    - processor/resourcedetectionprocessor/internal/openshift
+    - receiver/awsfirehosereceiver
+    - receiver/cloudfoundryreceiver
+    - receiver/prometheusreceiver/targetallocator
+  
+- `azureblobexporter`: Delete type alias Container (#40268)
+- `headersetterextension`: Unexport Header (#40542)
+- `intervalprocessor`: Unexport Processor (#40273)
+- `splunkenterprisereceiver`: Unexport Info (#40267)
+
+### 💡 Enhancements 💡
+
+- `pkg/ottl`: Add `ottl.ValueComparator` API to allow comparing values using the OTTL comparison rules (#40370)
+  This change introduces a new API (`ottl.NewValueComparator`) that allows users to 
+  compare raw values using the OTTL comparison rules. It is useful for implementing 
+  custom logic in OTTL functions where value comparison and consistency is desired.
+  
+
+### 🧰 Bug fixes 🧰
+
+- `pkg/translator/prometheusremotewrite`: Fix bug where metric metadata was sent with incorrect metric name if configuration includes 'namespace' (#39826)
+- `prometheusexporter`: Expose Scope Name, Version, Schema URL, and Attributes as labels. (#40004)
+  This work is done to comply with https://github.com/open-telemetry/opentelemetry-specification/issues/4223.
+
+<!-- previous-version -->
+
+## v0.127.0
+
+### 🛑 Breaking changes 🛑
+
+- `cloudfoundryreceiver`: Unexport EnvelopeStreamFactory and UAATokenProvider (#40270)
+- `fluentforwardreceiver`: Unexport all structs in fluentforward receiver. (#40108)
+- `postgresqlreceiver`: Unexport Item (#40265)
+- `netflowreceiver`: Unexport OtelLogsProducerWrapper (#40269)
+- `k8sobserver`: Unexport RunningContainer (#40228)
+- `receiver/vcenter`: unexport struct DatacenterStats (#40109)
+- `tcpcheckreceiver`: Unexport TCPConnectionState (#40271)
+- `wavefrontreceiver`: Unexport WavefrontParser struct (#40105)
+
+### 💡 Enhancements 💡
+
+- `sqlserverreceiver`: Use generated structured event functions in mdatagen (#40041)
+
+### 🧰 Bug fixes 🧰
+
+- `pkg/experimentalmetricmetadata`: Add missing otel.entity.type field to the delete events (#40279)
+
+<!-- previous-version -->
+
+## v0.126.0
+
+### 🛑 Breaking changes 🛑
+
+- `fluentforwardreceiver`: Unexport AckResponse (#39831)
+- `splunkenterprisereceiver`: Unexport InfoEntry and InfoContent (#39830)
+
+### 💡 Enhancements 💡
+
+- `pkg/winperfcounters`: Add methods to scrape raw values from Windows performance counters. (#39835)
+- `eventlogreceiver`: add raw XML query filtering option (#38517)
+- `prometheusremotewriteexporter`: Add `exporter.prometheusremotewritexporter.enableSendingRW2` feature gate and configuration to the exporter to send Prometheus remote write 2.0 version. (#33661)
+  WARNING! PRW 2.0 support for the exporter is still under development and not ready for usage.
+
+<!-- previous-version -->
+
+## v0.125.0
+
+### 💡 Enhancements 💡
+
+- `pkg/ottl`: Add `ottl.WithContextInferenceConditions` option to allow configuring extra context inferrer OTTL conditions (#39455)
+- `awss3exporter`: add configuration field `resource_attrs_to_s3/s3_prefix` to support mapping s3 bucket prefix to OTel resource attributes (#37858)
+  If `resource_attrs_to_s3/s3_prefix` is configured, s3 prefix will be determined based on the specified resource attribute and `s3uploader/s3_prefix` will serve as a fallback.
+- `pkg/golden`: Expose methods to write data to file outside of the scope of a test (#39673)
+  Expose WriteMetricsToFile to write pmetric data to a file outside of the scope of a test.
+  Expose WriteTracesToFile to write ptrace data to a file outside of the scope of a test
+  Expose WriteLogsToFile to write plog data to a file outside of the scope of a test
+  Expose WriteProfilesToFile to write pprofile data to a file outside of the scope of a test
+  
+- `pkg/ottl`: Add PMapGetSetter interface and StandardPMapGetSetter type. (#39657)
+
+### 🧰 Bug fixes 🧰
+
+- `resourcedetectionprocessor`: change the EKS cluster identifier and check the cluster version instead of the existence of aws-auth configmap (#39479)
+- `transformprocessor`: Fix the context inferrer to also take into consideration the global OTTL conditions configuration. (#39455)
+
+<!-- previous-version -->
+
+## v0.124.1
+
+<!-- previous-version -->
+
+## v0.124.0
+
+### 🛑 Breaking changes 🛑
+
+- `extension/headerssetter`: Change `DefaultValue` to use `configopaque.String` type. (#39127)
+- `datadogexporter`: Remove deprecated exporter configs. The exporter now uses pkg/datadog/config (#39104)
+  No impact to end users
+- `pkg/ottl`: Remove experimental transform context option `WithCache` from all OTTL contexts. (#39338)
+
+### 💡 Enhancements 💡
+
+- `pkg/pdatatest`: Introduce IgnoreExemplars, IgnoreExemplarSlice and ChangeDatapointAttributeValue to CompareMetricsOption (#39004)
+
+### 🧰 Bug fixes 🧰
+
+- `receiver/kubeletstats`: support user defined CA path for service account using the configtls option `ca_file` (#39291)
+
+<!-- previous-version -->
+
+## v0.123.0
+
+### 🛑 Breaking changes 🛑
+
+- `elasticsearchexporter`: Remove deprecated fields [min|max]_size_items from batch config (#38836)
+- `kakfaexporter`: Disable exposing factory options programmatically on NewFactory. (#38874)
+- `kafkareceiver`: Disable exposing factory options programmatically on NewFactory. (#38874)
+- `stefexporter`: Avoid embedding the QueueConfig, avoids potential conflicts (#38887)
+
+### 💡 Enhancements 💡
+
+- `prometheusremotewriteexporter`: Adds logic to convert from the internal OTEL Metrics unit format to Prometheus unit format and emit unit as part of Prometheus metadata. (#29452)
+
+### 🧰 Bug fixes 🧰
+
+- `pkg/ottl`: Fix the `ottl.ParserCollection` to properly infer the OTTL context when using the `ParseConditions` function. (#38755)
+- `pkg/pdatatest`: Change type of attribute values from string to any. (#39006)
+- `telemetrygen`: Fixes invalid HistogramDataPoint messages generated by telemetrygen. (#39025)
+  The bucket count and total count are now correct.
+
+<!-- previous-version -->
+
+## v0.122.0
+
+### 🛑 Breaking changes 🛑
+
+- `pkg/ottl`: Add support for parsing OTTL conditions to the `ottl.ParserCollection`. (#37904)
+  The `ottl.WithParserCollectionContext` option now requires the converters to be configured using the `ottl.WithStatementConverter` and `ottl.WithConditionConverter` options.
+  
+- `datadogconnector`: Remove `datagodconnector.TracesConfig`, use `datadogconfig.TracesConnectorConfig` instead (#38661)
+
+### 💡 Enhancements 💡
+
+- `dbstorageextension`: Optimize dbstorage.Batch() performance for single-type Operations set call (#38026)
+- `bearertokenauthextension`: Add the ability to configure multiple bearer tokens for the same endpoint. (#38148)
+- `pkg/pdatatest`: Add ValidateProfile() function to validate pprofile.Profile. (#38452)
+- `receiver/prometheus`: Adds the Prometheus API server to more easily debug the Prometheus config, service discovery, and targets. (#32646)
+- `pkg/pdatatest`: Simplify generating profiles for testing by transforming Go structs to profiles. (#38430)
+
+## v0.121.0
+
+### 🛑 Breaking changes 🛑
+
+- `pkg/stanza`: Add method `ProcessBatch` to `Operator` interface in `pkg/stanza/operator` package to support batch processing. (#35455)
+- `pkg/stanza`: Change signature of `emit.Callback` function in `pkg/stanza/fileconsumer/emit` package to emit multiple tokens. (#35455)
+- `awscontainerinsightreceiver`: Remove high cardinality attribute `Timestamp` from metrics generated by `awscontainerinsightreceiver` (#35861)
+- `pkg/ottl`: Remove ottl<context>.Option in favor of ottl.Option[ottl<context>.TransformContext] (#38247)
+
+### 💡 Enhancements 💡
+
+- `extension/sumologicextension`: Sanitize the version before it is used to send data to SumoLogic (#37689)
+- `metricstarttimeprocessor`: add true_reset_point strategy for setting the start timestamp of cumulative points. (#37186)
+  The implementation is copied from the Prometheus receiver.
+- `pkg/datadog`: StaticAPIKeyCheck available in pkg/datadog to validate Datadog api is key not empty and no invalid characters (#38223)
+  refactor of existing logic for export
+- `receiver/statsd`: Make all types within the config struct public (#38186)
+  This allows programmatically generating the receiver's config using the module's public types.
+
+### 🧰 Bug fixes 🧰
+
+- `testbed`: Fix batch interval calculation to avoid possible division by zero (#38084)
+
+## v0.120.1
+
+## v0.120.0
+
+### 🛑 Breaking changes 🛑
+
+- `s3provider`: Delete deprecated `New` factory function. Use `NewFactory` instead. (#37921)
+- `secretsmanagerprovider`: Delete deprecated `New` function, use `NewFactory` instead (#37923)
+- `pkg/stanza`: Remove deprecated `flush.WithPeriod`. (#37784)
+- `pkg/stanza`: Remove deprecated func BuildWithSplitFunc from stanza/fileconsumer (#37723)
+
+### 🚩 Deprecations 🚩
+
+- `pkg/stanza`: Deprecate all functions in stanza/decode (#37734)
+
+### 💡 Enhancements 💡
+
+- `pkg/translator/prometheusremotewrite`: add support for metric type sum in FromMetricsV2 (#33661)
+  The public function is partially implemented and not ready for use
+- `pkg/datadog`: Expose the internal Zaplogger implementation (#37939)
+- `dbstorageextension`: Add DB Transactions to dbstorage.Batch() method as it is expected by Storage API (#37805)
+- `internal/datadog`: create new package `github.com/open-telemetry/opentelemetry-collector-contrib/pkg/datadog/hostmetadata` which exposes `GetSourceProvider` from `github.com/open-telemetry/opentelemetry-collector-contrib/internal/datadog/hostmetadata` (#37668)
+- `textutil`: Remove unnecessary copy while decoding and constructing string (#37734)
+  This PR affects all log receivers, text extension and kafkareceiver.
+- `telemetrygen`: Exported the API for telemetrygen for test uses. Additionally added new E2E tests and fixed race condition (#36984)
+- `tailsamplingprocessor`: Add support for external caches when using the Tailsampling Processor in code. (#37035)
+
+## v0.119.0
+
+### 🚀 New components 🚀
+
+- `metricstarttimeprocessor`: Add the initial skeleton for the metricsstarttimeprocessor (#37186)
+  The component is still in development and is not ready for use.
+
+## v0.118.0
+
+### 🛑 Breaking changes 🛑
+
+- `routingconnector`: Change `match_once` parameter from `bool` to `*bool`. (#29882)
+  Boolean values should still unmarshal successfully, but direct instantiation in code will fail.
+  The change allows us to check for usage and warn of the upcoming removal in v0.120.0.
+  
+
+### 💡 Enhancements 💡
+
+- `pkg/ottl`: Enhanced error messages for invalid cache access and introduced options to configure their values within the OTTL contexts. (#29017)
+- `pkg/ottl`: Add value expression parser that enables components using ottl to retrieve values from the output of an expression (#35621)
+  the expression can be either a literal value, a path value within the context, or the result of a converter and/or a mathematical expression.
+
+## v0.117.0
+
+### 💡 Enhancements 💡
+
+- `pkg/ottl`: Change OTTL contexts to properly handle `ottl.Path` with context (#29017)
+  The OTTL contexts have a new option `EnablePathContextNames` to enable support for expressing a statement's context via path names in the statement
+
+## v0.116.0
+
+### 🚩 Deprecations 🚩
+
+- `routingprocessor`: Deprecated in favor of the routing connector. (#36616)
+
+### 💡 Enhancements 💡
+
+- `pkg/ottl`: Add the `ottl.ParserCollection` utility to help handling parsers for multiple OTTL contexts (#29017)
+  The `ottl.ParserCollection` groups contexts' `ottl.Parser`s, choosing the suitable one 
+  to parse a given statement. It supports context inference using the given statements, 
+  and allows prepending the context name to the statements' paths.
+  
+
+## v0.115.0
+
+### 🛑 Breaking changes 🛑
+
+- `pkg/datadog`: Refactor the API that provides metrics translator (#36474)
+  This is API change only and does not affect end users
+
+## v0.114.0
+
+### 🛑 Breaking changes 🛑
+
+- `pkg/stanza`: Changed signature of `emit.Callback` function in `pkg/stanza/fileconsumer/emit` package by introducing `emit.Token` struct that encapsulates the token's body and attributes. (#36260)
+
+### 💡 Enhancements 💡
+
+- `pkg/datadog`: Expose an API `TranslatorFromConfig` that creates a new metrics translator (#36300)
+  This is only code refactor and has no user-facing impact
+
+## v0.113.0
+
+### 🛑 Breaking changes 🛑
+
+- `testbed`: `scenarios.createConfigYaml()` and `utils.CreateConfigYaml()` functions now take processor configs as a struct slice argument instead of `map[string]string`. (#33003)
+  - This is to preserve processor order. `ProcessorNameAndConfigBody` is the newly created struct.
+  
+
+### 💡 Enhancements 💡
+
+- `receiver/prometheusremotewrite`: Implement body unmarshaling for Prometheus Remote Write requests (#35624)
+  Warning - The HTTP Server still doesn't do anything. It's just a placeholder for now.
+
+## v0.112.0
+
+### 🛑 Breaking changes 🛑
+
+- `pkg/translator/jaeger`: Remove error from method signature as it always returns nil (#35560)
+
+### 🚀 New components 🚀
+
+- `pkg/status`: Refactors the extension/healthcheckv2extension/internal/status into pkg/status (#34692)
+
+### 💡 Enhancements 💡
+
+- `pkg/translator/prometheusremotewrite`: add FromMetricsV2 (#33661)
+  The public function is partially implemented and not ready for use
+- `receiver/prometheusremotewrite`: Add HTTP Server to handler Prometheus Remote Write requests (#35535)
+  Warning - The HTTP Server still doesn't do anything. It's just a placeholder for now.
+
 ## v0.111.0
 
 ### 💡 Enhancements 💡
@@ -423,9 +1030,9 @@ If you are looking for user-facing changes, check out [CHANGELOG.md](./CHANGELOG
 ### 🚩 Deprecations 🚩
 
 - `pkg/stanza`: Deprecate 'helper.EncodingConfig' and 'helper.NewEncodingConfig' (#25846)
-- `pkg/stanza`: Deprecate encoding related elements of helper pacakge, in favor of new decoder package (#26019)
+- `pkg/stanza`: Deprecate encoding related elements of helper package, in favor of new decoder package (#26019)
   Includes the following deprecations | - Decoder - NewDecoder - LookupEncoding - IsNop
-- `pkg/stanza`: Deprecate tokenization related elements of helper pacakge, in favor of new tokenize package (#25914)
+- `pkg/stanza`: Deprecate tokenization related elements of helper package, in favor of new tokenize package (#25914)
   Includes the following deprecations | - Flusher - FlusherConfig - NewFlusherConfig - Multiline - MultilineConfig - NewMultilineConfig - NewLineStartSplitFunc - NewLineEndSplitFunc - NewNewlineSplitFunc - Splitter - SplitterConfig - NewSplitterConfig - SplitNone
 
 ### 💡 Enhancements 💡

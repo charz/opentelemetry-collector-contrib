@@ -4,13 +4,11 @@
 package gcp // import "github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourcedetectionprocessor/internal/gcp"
 
 import (
-	"context"
-	"fmt"
+	"errors"
 	"testing"
 
 	"github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp"
 	"github.com/stretchr/testify/assert"
-	conventions "go.opentelemetry.io/collector/semconv/v1.6.1"
 	"go.uber.org/zap"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/common/testutil"
@@ -40,13 +38,13 @@ func TestDetect(t *testing.T) {
 				gkeAvailabilityZone: "us-central1-c",
 			}),
 			expectedResource: map[string]any{
-				conventions.AttributeCloudProvider:         conventions.AttributeCloudProviderGCP,
-				conventions.AttributeCloudAccountID:        "my-project",
-				conventions.AttributeCloudPlatform:         conventions.AttributeCloudPlatformGCPKubernetesEngine,
-				conventions.AttributeK8SClusterName:        "my-cluster",
-				conventions.AttributeCloudAvailabilityZone: "us-central1-c",
-				conventions.AttributeHostID:                "1472385723456792345",
-				conventions.AttributeHostName:              "my-gke-node-1234",
+				"cloud.provider":          "gcp",
+				"cloud.account.id":        "my-project",
+				"cloud.platform":          "gcp_kubernetes_engine",
+				"k8s.cluster.name":        "my-cluster",
+				"cloud.availability_zone": "us-central1-c",
+				"host.id":                 "1472385723456792345",
+				"host.name":               "my-gke-node-1234",
 			},
 		},
 		{
@@ -60,13 +58,13 @@ func TestDetect(t *testing.T) {
 				gkeRegion:      "us-central1",
 			}),
 			expectedResource: map[string]any{
-				conventions.AttributeCloudProvider:  conventions.AttributeCloudProviderGCP,
-				conventions.AttributeCloudAccountID: "my-project",
-				conventions.AttributeCloudPlatform:  conventions.AttributeCloudPlatformGCPKubernetesEngine,
-				conventions.AttributeK8SClusterName: "my-cluster",
-				conventions.AttributeCloudRegion:    "us-central1",
-				conventions.AttributeHostID:         "1472385723456792345",
-				conventions.AttributeHostName:       "my-gke-node-1234",
+				"cloud.provider":   "gcp",
+				"cloud.account.id": "my-project",
+				"cloud.platform":   "gcp_kubernetes_engine",
+				"k8s.cluster.name": "my-cluster",
+				"cloud.region":     "us-central1",
+				"host.id":          "1472385723456792345",
+				"host.name":        "my-gke-node-1234",
 			},
 		},
 		{
@@ -74,18 +72,18 @@ func TestDetect(t *testing.T) {
 			detector: newTestDetector(&fakeGCPDetector{
 				projectID:      "my-project",
 				cloudPlatform:  gcp.GKE,
-				gceHostNameErr: fmt.Errorf("metadata endpoint is concealed"),
+				gceHostNameErr: errors.New("metadata endpoint is concealed"),
 				gkeHostID:      "1472385723456792345",
 				gkeClusterName: "my-cluster",
 				gkeRegion:      "us-central1",
 			}),
 			expectedResource: map[string]any{
-				conventions.AttributeCloudProvider:  conventions.AttributeCloudProviderGCP,
-				conventions.AttributeCloudAccountID: "my-project",
-				conventions.AttributeCloudPlatform:  conventions.AttributeCloudPlatformGCPKubernetesEngine,
-				conventions.AttributeK8SClusterName: "my-cluster",
-				conventions.AttributeCloudRegion:    "us-central1",
-				conventions.AttributeHostID:         "1472385723456792345",
+				"cloud.provider":   "gcp",
+				"cloud.account.id": "my-project",
+				"cloud.platform":   "gcp_kubernetes_engine",
+				"k8s.cluster.name": "my-cluster",
+				"cloud.region":     "us-central1",
+				"host.id":          "1472385723456792345",
 			},
 		},
 		{
@@ -102,14 +100,14 @@ func TestDetect(t *testing.T) {
 				gcpGceInstanceName:     "my-gke-node-1234",
 			}),
 			expectedResource: map[string]any{
-				conventions.AttributeCloudProvider:         conventions.AttributeCloudProviderGCP,
-				conventions.AttributeCloudAccountID:        "my-project",
-				conventions.AttributeCloudPlatform:         conventions.AttributeCloudPlatformGCPComputeEngine,
-				conventions.AttributeHostID:                "1472385723456792345",
-				conventions.AttributeHostName:              "my-gke-node-1234",
-				conventions.AttributeHostType:              "n1-standard1",
-				conventions.AttributeCloudRegion:           "us-central1",
-				conventions.AttributeCloudAvailabilityZone: "us-central1-c",
+				"cloud.provider":          "gcp",
+				"cloud.account.id":        "my-project",
+				"cloud.platform":          "gcp_compute_engine",
+				"host.id":                 "1472385723456792345",
+				"host.name":               "my-gke-node-1234",
+				"host.type":               "n1-standard1",
+				"cloud.region":            "us-central1",
+				"cloud.availability_zone": "us-central1-c",
 			},
 		},
 		{
@@ -129,16 +127,47 @@ func TestDetect(t *testing.T) {
 				cfg.GcpGceInstanceName.Enabled = true
 			}),
 			expectedResource: map[string]any{
-				conventions.AttributeCloudProvider:         conventions.AttributeCloudProviderGCP,
-				conventions.AttributeCloudAccountID:        "my-project",
-				conventions.AttributeCloudPlatform:         conventions.AttributeCloudPlatformGCPComputeEngine,
-				conventions.AttributeHostID:                "1472385723456792345",
-				conventions.AttributeHostName:              "my-gke-node-1234",
-				conventions.AttributeHostType:              "n1-standard1",
-				conventions.AttributeCloudRegion:           "us-central1",
-				conventions.AttributeCloudAvailabilityZone: "us-central1-c",
-				"gcp.gce.instance.hostname":                "custom.dns.example.com",
-				"gcp.gce.instance.name":                    "my-gke-node-1234",
+				"cloud.provider":            "gcp",
+				"cloud.account.id":          "my-project",
+				"cloud.platform":            "gcp_compute_engine",
+				"host.id":                   "1472385723456792345",
+				"host.name":                 "my-gke-node-1234",
+				"host.type":                 "n1-standard1",
+				"cloud.region":              "us-central1",
+				"cloud.availability_zone":   "us-central1-c",
+				"gcp.gce.instance.hostname": "custom.dns.example.com",
+				"gcp.gce.instance.name":     "my-gke-node-1234",
+			},
+		},
+		{
+			desc: "GCE with MIG",
+			detector: newTestDetector(&fakeGCPDetector{
+				projectID:              "my-project",
+				cloudPlatform:          gcp.GCE,
+				gceHostID:              "1472385723456792345",
+				gceHostName:            "my-gke-node-1234",
+				gceHostType:            "n1-standard1",
+				gceAvailabilityZone:    "us-central1-c",
+				gceRegion:              "us-central1",
+				gcpGceInstanceHostname: "custom.dns.example.com",
+				gcpGceInstanceName:     "my-gke-node-1234",
+				gcpGceManagedInstanceGroup: gcp.ManagedInstanceGroup{
+					Name:     "my-gke-node",
+					Location: "us-central1",
+					Type:     gcp.Region,
+				},
+			}),
+			expectedResource: map[string]any{
+				"cloud.provider":                        "gcp",
+				"cloud.account.id":                      "my-project",
+				"cloud.platform":                        "gcp_compute_engine",
+				"host.id":                               "1472385723456792345",
+				"host.name":                             "my-gke-node-1234",
+				"host.type":                             "n1-standard1",
+				"cloud.region":                          "us-central1",
+				"cloud.availability_zone":               "us-central1-c",
+				"gcp.gce.instance_group_manager.name":   "my-gke-node",
+				"gcp.gce.instance_group_manager.region": "us-central1",
 			},
 		},
 		{
@@ -152,13 +181,13 @@ func TestDetect(t *testing.T) {
 				faaSVersion:     "123456",
 			}),
 			expectedResource: map[string]any{
-				conventions.AttributeCloudProvider:  conventions.AttributeCloudProviderGCP,
-				conventions.AttributeCloudAccountID: "my-project",
-				conventions.AttributeCloudPlatform:  conventions.AttributeCloudPlatformGCPCloudRun,
-				conventions.AttributeCloudRegion:    "us-central1",
-				conventions.AttributeFaaSName:       "my-service",
-				conventions.AttributeFaaSVersion:    "123456",
-				conventions.AttributeFaaSInstance:   "1472385723456792345",
+				"cloud.provider":   "gcp",
+				"cloud.account.id": "my-project",
+				"cloud.platform":   "gcp_cloud_run",
+				"cloud.region":     "us-central1",
+				"faas.name":        "my-service",
+				"faas.version":     "123456",
+				"faas.instance":    "1472385723456792345",
 			},
 		},
 		{
@@ -172,14 +201,14 @@ func TestDetect(t *testing.T) {
 				faaSVersion:     "123456",
 			}),
 			expectedResource: map[string]any{
-				conventions.AttributeCloudProvider:  conventions.AttributeCloudProviderGCP,
-				conventions.AttributeCloudAccountID: "my-project",
-				conventions.AttributeCloudPlatform:  conventions.AttributeCloudPlatformGCPCloudRun,
-				conventions.AttributeCloudRegion:    "us-central1",
-				conventions.AttributeFaaSName:       "my-service",
-				conventions.AttributeFaaSVersion:    "123456",
-				conventions.AttributeFaaSInstance:   "1472385723456792345",
-				conventions.AttributeFaaSID:         "1472385723456792345",
+				"cloud.provider":   "gcp",
+				"cloud.account.id": "my-project",
+				"cloud.platform":   "gcp_cloud_run",
+				"cloud.region":     "us-central1",
+				"faas.name":        "my-service",
+				"faas.version":     "123456",
+				"faas.instance":    "1472385723456792345",
+				"faas.id":          "1472385723456792345",
 			},
 			addFaasID: true,
 		},
@@ -195,14 +224,14 @@ func TestDetect(t *testing.T) {
 				gcpCloudRunJobTaskIndex: "2",
 			}),
 			expectedResource: map[string]any{
-				conventions.AttributeCloudProvider:  conventions.AttributeCloudProviderGCP,
-				conventions.AttributeCloudAccountID: "my-project",
-				conventions.AttributeCloudPlatform:  conventions.AttributeCloudPlatformGCPCloudRun,
-				conventions.AttributeCloudRegion:    "us-central1",
-				conventions.AttributeFaaSName:       "my-service",
-				conventions.AttributeFaaSInstance:   "1472385723456792345",
-				"gcp.cloud_run.job.execution":       "my-service-ajg89",
-				"gcp.cloud_run.job.task_index":      "2",
+				"cloud.provider":               "gcp",
+				"cloud.account.id":             "my-project",
+				"cloud.platform":               "gcp_cloud_run",
+				"cloud.region":                 "us-central1",
+				"faas.name":                    "my-service",
+				"faas.instance":                "1472385723456792345",
+				"gcp.cloud_run.job.execution":  "my-service-ajg89",
+				"gcp.cloud_run.job.task_index": "2",
 			},
 		},
 		{
@@ -217,15 +246,15 @@ func TestDetect(t *testing.T) {
 				gcpCloudRunJobTaskIndex: "2",
 			}),
 			expectedResource: map[string]any{
-				conventions.AttributeCloudProvider:  conventions.AttributeCloudProviderGCP,
-				conventions.AttributeCloudAccountID: "my-project",
-				conventions.AttributeCloudPlatform:  conventions.AttributeCloudPlatformGCPCloudRun,
-				conventions.AttributeCloudRegion:    "us-central1",
-				conventions.AttributeFaaSName:       "my-service",
-				conventions.AttributeFaaSInstance:   "1472385723456792345",
-				conventions.AttributeFaaSID:         "1472385723456792345",
-				"gcp.cloud_run.job.execution":       "my-service-ajg89",
-				"gcp.cloud_run.job.task_index":      "2",
+				"cloud.provider":               "gcp",
+				"cloud.account.id":             "my-project",
+				"cloud.platform":               "gcp_cloud_run",
+				"cloud.region":                 "us-central1",
+				"faas.name":                    "my-service",
+				"faas.instance":                "1472385723456792345",
+				"faas.id":                      "1472385723456792345",
+				"gcp.cloud_run.job.execution":  "my-service-ajg89",
+				"gcp.cloud_run.job.task_index": "2",
 			},
 			addFaasID: true,
 		},
@@ -240,13 +269,13 @@ func TestDetect(t *testing.T) {
 				faaSVersion:     "123456",
 			}),
 			expectedResource: map[string]any{
-				conventions.AttributeCloudProvider:  conventions.AttributeCloudProviderGCP,
-				conventions.AttributeCloudAccountID: "my-project",
-				conventions.AttributeCloudPlatform:  conventions.AttributeCloudPlatformGCPCloudFunctions,
-				conventions.AttributeCloudRegion:    "us-central1",
-				conventions.AttributeFaaSName:       "my-service",
-				conventions.AttributeFaaSVersion:    "123456",
-				conventions.AttributeFaaSInstance:   "1472385723456792345",
+				"cloud.provider":   "gcp",
+				"cloud.account.id": "my-project",
+				"cloud.platform":   "gcp_cloud_functions",
+				"cloud.region":     "us-central1",
+				"faas.name":        "my-service",
+				"faas.version":     "123456",
+				"faas.instance":    "1472385723456792345",
 			},
 		},
 		{
@@ -260,14 +289,14 @@ func TestDetect(t *testing.T) {
 				faaSVersion:     "123456",
 			}),
 			expectedResource: map[string]any{
-				conventions.AttributeCloudProvider:  conventions.AttributeCloudProviderGCP,
-				conventions.AttributeCloudAccountID: "my-project",
-				conventions.AttributeCloudPlatform:  conventions.AttributeCloudPlatformGCPCloudFunctions,
-				conventions.AttributeCloudRegion:    "us-central1",
-				conventions.AttributeFaaSName:       "my-service",
-				conventions.AttributeFaaSVersion:    "123456",
-				conventions.AttributeFaaSInstance:   "1472385723456792345",
-				conventions.AttributeFaaSID:         "1472385723456792345",
+				"cloud.provider":   "gcp",
+				"cloud.account.id": "my-project",
+				"cloud.platform":   "gcp_cloud_functions",
+				"cloud.region":     "us-central1",
+				"faas.name":        "my-service",
+				"faas.version":     "123456",
+				"faas.instance":    "1472385723456792345",
+				"faas.id":          "1472385723456792345",
 			},
 			addFaasID: true,
 		},
@@ -283,14 +312,14 @@ func TestDetect(t *testing.T) {
 				appEngineServiceVersion:   "123456",
 			}),
 			expectedResource: map[string]any{
-				conventions.AttributeCloudProvider:         conventions.AttributeCloudProviderGCP,
-				conventions.AttributeCloudAccountID:        "my-project",
-				conventions.AttributeCloudPlatform:         conventions.AttributeCloudPlatformGCPAppEngine,
-				conventions.AttributeCloudRegion:           "us-central1",
-				conventions.AttributeCloudAvailabilityZone: "us-central1-c",
-				conventions.AttributeFaaSName:              "my-service",
-				conventions.AttributeFaaSVersion:           "123456",
-				conventions.AttributeFaaSInstance:          "1472385723456792345",
+				"cloud.provider":          "gcp",
+				"cloud.account.id":        "my-project",
+				"cloud.platform":          "gcp_app_engine",
+				"cloud.region":            "us-central1",
+				"cloud.availability_zone": "us-central1-c",
+				"faas.name":               "my-service",
+				"faas.version":            "123456",
+				"faas.instance":           "1472385723456792345",
 			},
 		},
 		{
@@ -305,15 +334,15 @@ func TestDetect(t *testing.T) {
 				appEngineServiceVersion:   "123456",
 			}),
 			expectedResource: map[string]any{
-				conventions.AttributeCloudProvider:         conventions.AttributeCloudProviderGCP,
-				conventions.AttributeCloudAccountID:        "my-project",
-				conventions.AttributeCloudPlatform:         conventions.AttributeCloudPlatformGCPAppEngine,
-				conventions.AttributeCloudRegion:           "us-central1",
-				conventions.AttributeCloudAvailabilityZone: "us-central1-c",
-				conventions.AttributeFaaSName:              "my-service",
-				conventions.AttributeFaaSVersion:           "123456",
-				conventions.AttributeFaaSInstance:          "1472385723456792345",
-				conventions.AttributeFaaSID:                "1472385723456792345",
+				"cloud.provider":          "gcp",
+				"cloud.account.id":        "my-project",
+				"cloud.platform":          "gcp_app_engine",
+				"cloud.region":            "us-central1",
+				"cloud.availability_zone": "us-central1-c",
+				"faas.name":               "my-service",
+				"faas.version":            "123456",
+				"faas.instance":           "1472385723456792345",
+				"faas.id":                 "1472385723456792345",
 			},
 			addFaasID: true,
 		},
@@ -329,14 +358,14 @@ func TestDetect(t *testing.T) {
 				appEngineServiceVersion:   "123456",
 			}),
 			expectedResource: map[string]any{
-				conventions.AttributeCloudProvider:         conventions.AttributeCloudProviderGCP,
-				conventions.AttributeCloudAccountID:        "my-project",
-				conventions.AttributeCloudPlatform:         conventions.AttributeCloudPlatformGCPAppEngine,
-				conventions.AttributeCloudRegion:           "us-central1",
-				conventions.AttributeCloudAvailabilityZone: "us-central1-c",
-				conventions.AttributeFaaSName:              "my-service",
-				conventions.AttributeFaaSVersion:           "123456",
-				conventions.AttributeFaaSInstance:          "1472385723456792345",
+				"cloud.provider":          "gcp",
+				"cloud.account.id":        "my-project",
+				"cloud.platform":          "gcp_app_engine",
+				"cloud.region":            "us-central1",
+				"cloud.availability_zone": "us-central1-c",
+				"faas.name":               "my-service",
+				"faas.version":            "123456",
+				"faas.instance":           "1472385723456792345",
 			},
 		},
 		{
@@ -351,15 +380,15 @@ func TestDetect(t *testing.T) {
 				appEngineServiceVersion:   "123456",
 			}),
 			expectedResource: map[string]any{
-				conventions.AttributeCloudProvider:         conventions.AttributeCloudProviderGCP,
-				conventions.AttributeCloudAccountID:        "my-project",
-				conventions.AttributeCloudPlatform:         conventions.AttributeCloudPlatformGCPAppEngine,
-				conventions.AttributeCloudRegion:           "us-central1",
-				conventions.AttributeCloudAvailabilityZone: "us-central1-c",
-				conventions.AttributeFaaSName:              "my-service",
-				conventions.AttributeFaaSVersion:           "123456",
-				conventions.AttributeFaaSInstance:          "1472385723456792345",
-				conventions.AttributeFaaSID:                "1472385723456792345",
+				"cloud.provider":          "gcp",
+				"cloud.account.id":        "my-project",
+				"cloud.platform":          "gcp_app_engine",
+				"cloud.region":            "us-central1",
+				"cloud.availability_zone": "us-central1-c",
+				"faas.name":               "my-service",
+				"faas.version":            "123456",
+				"faas.instance":           "1472385723456792345",
+				"faas.id":                 "1472385723456792345",
 			},
 			addFaasID: true,
 		},
@@ -373,11 +402,11 @@ func TestDetect(t *testing.T) {
 				gcpBareMetalSolutionProjectID:   "my-project",
 			}),
 			expectedResource: map[string]any{
-				conventions.AttributeCloudProvider:  conventions.AttributeCloudProviderGCP,
-				conventions.AttributeCloudAccountID: "my-project",
-				conventions.AttributeCloudPlatform:  "gcp_bare_metal_solution",
-				conventions.AttributeCloudRegion:    "us-central1",
-				conventions.AttributeHostName:       "1472385723456792345",
+				"cloud.provider":   "gcp",
+				"cloud.account.id": "my-project",
+				"cloud.platform":   "gcp_bare_metal_solution",
+				"cloud.region":     "us-central1",
+				"host.name":        "1472385723456792345",
 			},
 		},
 		{
@@ -387,30 +416,30 @@ func TestDetect(t *testing.T) {
 				cloudPlatform: gcp.UnknownPlatform,
 			}),
 			expectedResource: map[string]any{
-				conventions.AttributeCloudProvider:  conventions.AttributeCloudProviderGCP,
-				conventions.AttributeCloudAccountID: "my-project",
+				"cloud.provider":   "gcp",
+				"cloud.account.id": "my-project",
 			},
 		},
 		{
 			desc: "error",
 			detector: newTestDetector(&fakeGCPDetector{
-				err: fmt.Errorf("failed to get metadata"),
+				err: errors.New("failed to get metadata"),
 			}),
 			expectErr: true,
 			expectedResource: map[string]any{
-				conventions.AttributeCloudProvider: conventions.AttributeCloudProviderGCP,
+				"cloud.provider": "gcp",
 			},
 		},
 	} {
 		t.Run(tc.desc, func(t *testing.T) {
 			defer testutil.SetFeatureGateForTest(t, removeGCPFaasID, !tc.addFaasID)()
-			res, schema, err := tc.detector.Detect(context.TODO())
+			res, schema, err := tc.detector.Detect(t.Context())
 			if tc.expectErr {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
 			}
-			assert.Equal(t, conventions.SchemaURL, schema)
+			assert.Contains(t, schema, "https://opentelemetry.io/schemas/")
 			assert.Equal(t, tc.expectedResource, res.Attributes().AsRaw(), "Resource object returned is incorrect")
 		})
 	}
@@ -456,6 +485,7 @@ type fakeGCPDetector struct {
 	gcpCloudRunJobTaskIndex         string
 	gcpGceInstanceName              string
 	gcpGceInstanceHostname          string
+	gcpGceManagedInstanceGroup      gcp.ManagedInstanceGroup
 	gcpBareMetalSolutionInstanceID  string
 	gcpBareMetalSolutionCloudRegion string
 	gcpBareMetalSolutionProjectID   string
@@ -620,6 +650,13 @@ func (f *fakeGCPDetector) GCEInstanceHostname() (string, error) {
 		return "", f.err
 	}
 	return f.gcpGceInstanceHostname, nil
+}
+
+func (f *fakeGCPDetector) GCEManagedInstanceGroup() (gcp.ManagedInstanceGroup, error) {
+	if f.err != nil {
+		return gcp.ManagedInstanceGroup{}, f.err
+	}
+	return f.gcpGceManagedInstanceGroup, nil
 }
 
 func (f *fakeGCPDetector) BareMetalSolutionInstanceID() (string, error) {

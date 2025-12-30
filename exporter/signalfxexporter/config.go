@@ -11,30 +11,41 @@ import (
 
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/configopaque"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
-	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/signalfxexporter/internal/correlation"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/signalfxexporter/internal/translation"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/signalfxexporter/internal/translation/dpfilters"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/gopsutilenv"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/splunk"
 )
 
-const (
-	translationRulesConfigKey = "translation_rules"
-)
+// This mimics the original translation_rules config option (now deleted), but is not reachable
+// by user configuration. It's only used by defaultTranslationRules to parse the
+// YAML into a []translation.Rule object.
+type translationRulesConfig struct {
+	TranslationRules []translation.Rule `mapstructure:"translation_rules"`
+}
 
 var defaultTranslationRules = func() []translation.Rule {
-	cfg, err := loadConfig([]byte(translation.DefaultTranslationRulesYaml))
+	var data map[string]any
+	var defaultRules translationRulesConfig
+
 	// It is safe to panic since this is deterministic, and will not fail anywhere else if it doesn't fail all the time.
-	if err != nil {
+	if err := yaml.Unmarshal([]byte(translation.DefaultTranslationRulesYaml), &data); err != nil {
 		panic(err)
 	}
-	return cfg.TranslationRules
+
+	if err := confmap.NewFromStringMap(data).Unmarshal(&defaultRules); err != nil {
+		panic(fmt.Errorf("failed to load default translation rules: %w", err))
+	}
+
+	return defaultRules.TranslationRules
 }()
 
 var defaultExcludeMetrics = func() []dpfilters.MetricFilter {
@@ -50,7 +61,7 @@ var _ confmap.Unmarshaler = (*Config)(nil)
 
 // Config defines configuration for SignalFx exporter.
 type Config struct {
-	QueueSettings             exporterhelper.QueueConfig `mapstructure:"sending_queue"`
+	QueueSettings             configoptional.Optional[exporterhelper.QueueBatchConfig] `mapstructure:"sending_queue"`
 	configretry.BackOffConfig `mapstructure:"retry_on_failure"`
 	confighttp.ClientConfig   `mapstructure:",squash"` // squash ensures fields are correctly decoded in embedded struct.
 
@@ -68,15 +79,15 @@ type Config struct {
 
 	// ingest_tls needs to be set if the exporter's IngestURL is pointing to a signalfx receiver
 	// with TLS enabled and using a self-signed certificate where its CA is not loaded in the system cert pool.
-	IngestTLSSettings configtls.ClientConfig `mapstructure:"ingest_tls,omitempty"`
+	IngestTLSs configtls.ClientConfig `mapstructure:"ingest_tls,omitempty"`
 
 	// APIURL is the destination to where SignalFx metadata will be sent. This
 	// value takes precedence over the value of Realm
 	APIURL string `mapstructure:"api_url"`
 
-	// api_tls needs to be set if the exporter's APIURL is pointing to a httforwarder extension
+	// api_tls needs to be set if the exporter's APIURL is pointing to a httpforwarder extension
 	// with TLS enabled and using a self-signed certificate where its CA is not loaded in the system cert pool.
-	APITLSSettings configtls.ClientConfig `mapstructure:"api_tls,omitempty"`
+	APITLSs configtls.ClientConfig `mapstructure:"api_tls,omitempty"`
 
 	// Whether to log datapoints dispatched to Splunk Observability Cloud
 	LogDataPoints bool `mapstructure:"log_data_points"`
@@ -88,11 +99,6 @@ type Config struct {
 	DimensionClient DimensionClientConfig `mapstructure:"dimension_client"`
 
 	splunk.AccessTokenPassthroughConfig `mapstructure:",squash"`
-
-	// TranslationRules defines a set of rules how to translate metrics to a SignalFx compatible format
-	// Rules defined in translation/constants.go are used by default.
-	// Deprecated: Use metricstransform processor to do metrics transformations.
-	TranslationRules []translation.Rule `mapstructure:"translation_rules"`
 
 	DisableDefaultTranslationRules bool `mapstructure:"disable_default_translation_rules"`
 
@@ -110,6 +116,9 @@ type Config struct {
 	//            And keep `override=true` in resourcedetection config.
 	SyncHostMetadata bool `mapstructure:"sync_host_metadata"`
 
+	// RootPath is the host's root directory used when syncing metadata; applies to linux only.
+	RootPath string `mapstructure:"root_path"`
+
 	// ExcludeMetrics defines dpfilter.MetricFilters that will determine metrics to be
 	// excluded from sending to SignalFx backend. If translations enabled with
 	// TranslationRules options, the exclusion will be applied on translated metrics.
@@ -123,6 +132,11 @@ type Config struct {
 	// ExcludeProperties defines dpfilter.PropertyFilters to prevent inclusion of
 	// properties to include with dimension updates to the SignalFx backend.
 	ExcludeProperties []dpfilters.PropertyFilter `mapstructure:"exclude_properties"`
+
+	// DefaultProperties defines a set of properties to be added to any dimension
+	// updates to the Splunk Observability backend. Any explicit property value
+	// takes precedence over those defaults.
+	DefaultProperties map[string]string `mapstructure:"default_properties"`
 
 	// Correlation configuration for syncing traces service and environment to metrics.
 	Correlation *correlation.Config `mapstructure:"correlation"`
@@ -148,27 +162,20 @@ type DimensionClientConfig struct {
 	MaxConnsPerHost     int           `mapstructure:"max_conns_per_host"`
 	IdleConnTimeout     time.Duration `mapstructure:"idle_conn_timeout"`
 	Timeout             time.Duration `mapstructure:"timeout"`
+	DropTags            bool          `mapstructure:"drop_tags"`
 }
 
-func (cfg *Config) getMetricTranslator(logger *zap.Logger, done chan struct{}) (*translation.MetricTranslator, error) {
-	rules := defaultTranslationRules
-	if cfg.TranslationRules != nil {
-		// Previous way to disable default translation rules.
-		if len(cfg.TranslationRules) == 0 {
-			logger.Warn("You are using the deprecated `translation_rules` option that will be removed soon; Use `disable_default_translation_rules` to disable the default rules in a gateway mode.")
-			rules = []translation.Rule{}
-		} else {
-			logger.Warn("You are using the deprecated `translation_rules` option that will be removed soon; Use metricstransform processor instead.")
-			rules = cfg.TranslationRules
-		}
-	}
+func (cfg *Config) getMetricTranslator(done chan struct{}) (*translation.MetricTranslator, error) {
+	var rules []translation.Rule
 	// The new way to disable default translation rules. This override any setting of the default TranslationRules.
 	if cfg.DisableDefaultTranslationRules {
 		rules = []translation.Rule{}
+	} else {
+		rules = defaultTranslationRules
 	}
 	metricTranslator, err := translation.NewMetricTranslator(rules, cfg.DeltaTranslationTTL, done)
 	if err != nil {
-		return nil, fmt.Errorf("invalid \"%s\": %w", translationRulesConfigKey, err)
+		return nil, fmt.Errorf("invalid default translation rules: %w", err)
 	}
 
 	return metricTranslator, nil
@@ -224,10 +231,21 @@ func (cfg *Config) Validate() error {
 			` "ingest_url" and "api_url" should be explicitly set`)
 	}
 
-	if cfg.ClientConfig.Timeout < 0 {
+	if cfg.Timeout < 0 {
 		return errors.New(`cannot have a negative "timeout"`)
 	}
 
+	if cfg.SyncHostMetadata {
+		if err := gopsutilenv.ValidateRootPath(cfg.RootPath); err != nil {
+			return fmt.Errorf("invalid root_path: %w", err)
+		}
+	}
+
+	for k, v := range cfg.DefaultProperties {
+		if v == "" {
+			return fmt.Errorf(`"default_properties" contains an empty value under key %q`, k)
+		}
+	}
 	return nil
 }
 

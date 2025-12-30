@@ -12,7 +12,7 @@ import (
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
-	"go.opentelemetry.io/collector/extension/experimental/storage"
+	"go.opentelemetry.io/collector/extension/xextension/storage"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/receiver"
@@ -48,7 +48,6 @@ func newLogsReceiver(
 	createClient sqlquery.ClientProviderFunc,
 	nextConsumer consumer.Logs,
 ) (*logsReceiver, error) {
-
 	obsr, err := receiverhelper.NewObsReport(receiverhelper.ObsReportSettings{
 		ReceiverID:             settings.ID,
 		ReceiverCreateSettings: settings,
@@ -57,11 +56,21 @@ func newLogsReceiver(
 		return nil, err
 	}
 
+	var dataSource string
+	if config.DataSource != "" {
+		dataSource = config.DataSource
+	} else {
+		dataSource, err = sqlquery.BuildDataSourceString(config.Config)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	receiver := &logsReceiver{
 		config:   config,
 		settings: settings,
 		createConnection: func() (*sql.DB, error) {
-			return sqlOpenerFunc(config.Driver, config.DataSource)
+			return sqlOpenerFunc(config.Driver, dataSource)
 		},
 		createClient:      createClient,
 		nextConsumer:      nextConsumer,
@@ -268,7 +277,6 @@ func (queryReceiver *logsQueryReceiver) retrieveTrackingValue(ctx context.Contex
 	}
 
 	return string(storedTrackingValueBytes)
-
 }
 
 func (queryReceiver *logsQueryReceiver) collect(ctx context.Context) (plog.Logs, error) {
@@ -283,11 +291,16 @@ func (queryReceiver *logsQueryReceiver) collect(ctx context.Context) (plog.Logs,
 		rows, err = queryReceiver.client.QueryRows(ctx)
 	}
 	if err != nil {
-		return logs, fmt.Errorf("error getting rows: %w", err)
+		if !errors.Is(err, sqlquery.ErrNullValueWarning) {
+			return logs, fmt.Errorf("scraper: %w", err)
+		}
+		queryReceiver.logger.Warn("problems encountered getting log rows", zap.Error(err))
 	}
 
 	var errs []error
-	scopeLogs := logs.ResourceLogs().AppendEmpty().ScopeLogs().AppendEmpty().LogRecords()
+	scope := logs.ResourceLogs().AppendEmpty().ScopeLogs().AppendEmpty()
+	scope.Scope().SetName(metadata.ScopeName)
+	scopeLogs := scope.LogRecords()
 	for logsConfigIndex, logsConfig := range queryReceiver.query.Logs {
 		for _, row := range rows {
 			logRecord := scopeLogs.AppendEmpty()
@@ -335,7 +348,7 @@ func rowToLog(row sqlquery.StringMap, config sqlquery.LogsCfg, logRecord plog.Lo
 	return errors.Join(errs...)
 }
 
-func (queryReceiver *logsQueryReceiver) shutdown(_ context.Context) error {
+func (queryReceiver *logsQueryReceiver) shutdown(context.Context) error {
 	if queryReceiver.db == nil {
 		return nil
 	}

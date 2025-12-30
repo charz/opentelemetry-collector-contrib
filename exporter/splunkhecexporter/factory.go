@@ -9,16 +9,17 @@ import (
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/confighttp"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/exporter"
-	"go.opentelemetry.io/collector/exporter/exporterbatcher"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
-	conventions "go.opentelemetry.io/collector/semconv/v1.27.0"
+	"go.uber.org/zap"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/splunkhecexporter/internal/metadata"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/splunk"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/batchperresourceattr"
+	translator "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/splunk"
 )
 
 const (
@@ -59,44 +60,34 @@ func NewFactory() exporter.Factory {
 }
 
 func createDefaultConfig() component.Config {
-	batcherCfg := exporterbatcher.NewDefaultConfig()
-	batcherCfg.Enabled = false
-
 	defaultMaxConns := defaultMaxIdleCons
 	defaultIdleConnTimeout := defaultIdleConnTimeout
+
+	clientConfig := confighttp.NewDefaultClientConfig()
+	clientConfig.Timeout = defaultHTTPTimeout
+	clientConfig.IdleConnTimeout = defaultIdleConnTimeout
+	clientConfig.MaxIdleConnsPerHost = defaultMaxConns
+	clientConfig.MaxIdleConns = defaultMaxConns
+	clientConfig.HTTP2ReadIdleTimeout = defaultHTTP2ReadIdleTimeout
+	clientConfig.HTTP2PingTimeout = defaultHTTP2PingTimeout
+
 	return &Config{
-		LogDataEnabled:       true,
-		ProfilingDataEnabled: true,
-		ClientConfig: confighttp.ClientConfig{
-			Timeout:              defaultHTTPTimeout,
-			IdleConnTimeout:      &defaultIdleConnTimeout,
-			MaxIdleConnsPerHost:  &defaultMaxConns,
-			MaxIdleConns:         &defaultMaxConns,
-			HTTP2ReadIdleTimeout: defaultHTTP2ReadIdleTimeout,
-			HTTP2PingTimeout:     defaultHTTP2PingTimeout,
-		},
+		LogDataEnabled:          true,
+		ProfilingDataEnabled:    true,
+		ClientConfig:            clientConfig,
 		SplunkAppName:           defaultSplunkAppName,
 		BackOffConfig:           configretry.NewDefaultBackOffConfig(),
-		QueueSettings:           exporterhelper.NewDefaultQueueConfig(),
-		BatcherConfig:           batcherCfg,
+		QueueSettings:           configoptional.Some(exporterhelper.NewDefaultQueueConfig()),
 		DisableCompression:      false,
 		MaxContentLengthLogs:    defaultContentLengthLogsLimit,
 		MaxContentLengthMetrics: defaultContentLengthMetricsLimit,
 		MaxContentLengthTraces:  defaultContentLengthTracesLimit,
 		MaxEventSize:            defaultMaxEventSize,
-		HecToOtelAttrs: splunk.HecToOtelAttrs{
-			Source:     splunk.DefaultSourceLabel,
-			SourceType: splunk.DefaultSourceTypeLabel,
-			Index:      splunk.DefaultIndexLabel,
-			Host:       conventions.AttributeHostName,
-		},
-		HecFields: OtelToHecFields{
-			SeverityText:   splunk.DefaultSeverityTextLabel,
-			SeverityNumber: splunk.DefaultSeverityNumberLabel,
-		},
-		HealthPath:            splunk.DefaultHealthPath,
-		HecHealthCheckEnabled: false,
-		ExportRaw:             false,
+		OtelAttrsToHec:          translator.DefaultHecToOtelAttrs(),
+		HecFields:               translator.DefaultOtelToHecFields(),
+		HealthPath:              splunk.DefaultHealthPath,
+		HecHealthCheckEnabled:   false,
+		ExportRaw:               false,
 		Telemetry: HecTelemetry{
 			Enabled:              false,
 			OverrideMetricsNames: map[string]string{},
@@ -111,10 +102,10 @@ func createTracesExporter(
 	config component.Config,
 ) (exporter.Traces, error) {
 	cfg := config.(*Config)
-
+	showDeprecationWarnings(cfg, set.Logger)
 	c := newTracesClient(set, cfg)
 
-	e, err := exporterhelper.NewTracesExporter(
+	e, err := exporterhelper.NewTraces(
 		ctx,
 		set,
 		cfg,
@@ -125,9 +116,7 @@ func createTracesExporter(
 		exporterhelper.WithQueue(cfg.QueueSettings),
 		exporterhelper.WithStart(c.start),
 		exporterhelper.WithShutdown(c.stop),
-		exporterhelper.WithBatcher(cfg.BatcherConfig),
 	)
-
 	if err != nil {
 		return nil, err
 	}
@@ -146,10 +135,10 @@ func createMetricsExporter(
 	config component.Config,
 ) (exporter.Metrics, error) {
 	cfg := config.(*Config)
-
+	showDeprecationWarnings(cfg, set.Logger)
 	c := newMetricsClient(set, cfg)
 
-	e, err := exporterhelper.NewMetricsExporter(
+	e, err := exporterhelper.NewMetrics(
 		ctx,
 		set,
 		cfg,
@@ -160,7 +149,6 @@ func createMetricsExporter(
 		exporterhelper.WithQueue(cfg.QueueSettings),
 		exporterhelper.WithStart(c.start),
 		exporterhelper.WithShutdown(c.stop),
-		exporterhelper.WithBatcher(cfg.BatcherConfig),
 	)
 	if err != nil {
 		return nil, err
@@ -180,10 +168,10 @@ func createLogsExporter(
 	config component.Config,
 ) (exporter exporter.Logs, err error) {
 	cfg := config.(*Config)
-
+	showDeprecationWarnings(cfg, set.Logger)
 	c := newLogsClient(set, cfg)
 
-	logsExporter, err := exporterhelper.NewLogsExporter(
+	logsExporter, err := exporterhelper.NewLogs(
 		ctx,
 		set,
 		cfg,
@@ -194,9 +182,7 @@ func createLogsExporter(
 		exporterhelper.WithQueue(cfg.QueueSettings),
 		exporterhelper.WithStart(c.start),
 		exporterhelper.WithShutdown(c.stop),
-		exporterhelper.WithBatcher(cfg.BatcherConfig),
 	)
-
 	if err != nil {
 		return nil, err
 	}
@@ -212,4 +198,10 @@ func createLogsExporter(
 	}
 
 	return wrapped, nil
+}
+
+func showDeprecationWarnings(cfg *Config, logger *zap.Logger) {
+	if cfg.DeprecatedBatcher.isSet {
+		logger.Warn("The 'batcher' field is deprecated and will be removed in a future release. Use 'sending_queue::batch' instead.")
+	}
 }

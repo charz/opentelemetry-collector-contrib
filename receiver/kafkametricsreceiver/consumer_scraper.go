@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/IBM/sarama"
@@ -14,7 +15,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/receiver"
-	"go.opentelemetry.io/collector/receiver/scraperhelper"
+	"go.opentelemetry.io/collector/scraper"
 	"go.uber.org/multierr"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/kafkametricsreceiver/internal/metadata"
@@ -26,9 +27,9 @@ type consumerScraper struct {
 	groupFilter  *regexp.Regexp
 	topicFilter  *regexp.Regexp
 	clusterAdmin sarama.ClusterAdmin
-	saramaConfig *sarama.Config
 	config       Config
 	mb           *metadata.MetricsBuilder
+	mu           sync.Mutex
 }
 
 func (s *consumerScraper) start(_ context.Context, _ component.Host) error {
@@ -44,25 +45,28 @@ func (s *consumerScraper) shutdown(_ context.Context) error {
 }
 
 func (s *consumerScraper) scrape(context.Context) (pmetric.Metrics, error) {
-	if s.client == nil {
-		client, err := newSaramaClient(s.config.Brokers, s.saramaConfig)
+	if s.client == nil || s.client.Closed() {
+		client, err := newSaramaClient(context.Background(), s.config.ClientConfig)
 		if err != nil {
 			return pmetric.Metrics{}, fmt.Errorf("failed to create client in consumer scraper: %w", err)
 		}
-		clusterAdmin, err := newClusterAdmin(s.config.Brokers, s.saramaConfig)
+		s.client = client
+	}
+
+	if s.clusterAdmin == nil {
+		admin, err := newClusterAdmin(s.client)
 		if err != nil {
-			if client != nil {
-				_ = client.Close()
+			if s.client != nil {
+				_ = s.client.Close()
 			}
 			return pmetric.Metrics{}, fmt.Errorf("failed to create cluster admin in consumer scraper: %w", err)
 		}
-		s.client = client
-		s.clusterAdmin = clusterAdmin
+		s.clusterAdmin = admin
 	}
 
 	cgs, listErr := s.clusterAdmin.ListConsumerGroups()
 	if listErr != nil {
-		return pmetric.Metrics{}, listErr
+		return pmetric.Metrics{}, s.resetClientOnError(listErr)
 	}
 
 	var matchedGrpIDs []string
@@ -74,7 +78,7 @@ func (s *consumerScraper) scrape(context.Context) (pmetric.Metrics, error) {
 
 	allTopics, listErr := s.clusterAdmin.ListTopics()
 	if listErr != nil {
-		return pmetric.Metrics{}, listErr
+		return pmetric.Metrics{}, s.resetClientOnError(listErr)
 	}
 
 	matchedTopics := map[string]sarama.TopicDetail{}
@@ -108,7 +112,7 @@ func (s *consumerScraper) scrape(context.Context) (pmetric.Metrics, error) {
 	}
 	consumerGroups, listErr := s.clusterAdmin.DescribeConsumerGroups(matchedGrpIDs)
 	if listErr != nil {
-		return pmetric.Metrics{}, listErr
+		return pmetric.Metrics{}, s.resetClientOnError(listErr)
 	}
 
 	now := pcommon.NewTimestampFromTime(time.Now())
@@ -163,8 +167,7 @@ func (s *consumerScraper) scrape(context.Context) (pmetric.Metrics, error) {
 	return s.mb.Emit(metadata.WithResource(rb.Emit())), scrapeError
 }
 
-func createConsumerScraper(_ context.Context, cfg Config, saramaConfig *sarama.Config,
-	settings receiver.Settings) (scraperhelper.Scraper, error) {
+func createConsumerScraper(_ context.Context, cfg Config, settings receiver.Settings) (scraper.Metrics, error) {
 	groupFilter, err := regexp.Compile(cfg.GroupMatch)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compile group_match: %w", err)
@@ -174,16 +177,26 @@ func createConsumerScraper(_ context.Context, cfg Config, saramaConfig *sarama.C
 		return nil, fmt.Errorf("failed to compile topic filter: %w", err)
 	}
 	s := consumerScraper{
-		settings:     settings,
-		groupFilter:  groupFilter,
-		topicFilter:  topicFilter,
-		config:       cfg,
-		saramaConfig: saramaConfig,
+		settings:    settings,
+		groupFilter: groupFilter,
+		topicFilter: topicFilter,
+		config:      cfg,
 	}
-	return scraperhelper.NewScraper(
-		consumersScraperType,
+	return scraper.NewMetrics(
 		s.scrape,
-		scraperhelper.WithStart(s.start),
-		scraperhelper.WithShutdown(s.shutdown),
+		scraper.WithStart(s.start),
+		scraper.WithShutdown(s.shutdown),
 	)
+}
+
+func (s *consumerScraper) resetClientOnError(err error) error {
+	if isRecoverableError(err) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.clusterAdmin.Close()
+		s.clusterAdmin = nil
+		return fmt.Errorf("closing client because of reconnection error %w", err)
+	}
+
+	return err
 }

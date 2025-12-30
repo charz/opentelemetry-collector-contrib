@@ -6,6 +6,7 @@ package datadogreceiver
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,25 +20,29 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/receiver/receivertest"
 	"go.uber.org/multierr"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/datadogreceiver/internal/metadata"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/datadogreceiver/internal/translator"
 )
 
 func TestDatadogTracesReceiver_Lifecycle(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 	cfg.(*Config).Endpoint = "localhost:0"
-	ddr, err := factory.CreateTraces(context.Background(), receivertest.NewNopSettings(), cfg, consumertest.NewNop())
+	ddr, err := factory.CreateTraces(t.Context(), receivertest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
 	assert.NoError(t, err, "Traces receiver should be created")
 
-	err = ddr.Start(context.Background(), componenttest.NewNopHost())
+	err = ddr.Start(t.Context(), componenttest.NewNopHost())
 	assert.NoError(t, err, "Server should start")
 
-	err = ddr.Shutdown(context.Background())
+	err = ddr.Shutdown(t.Context())
 	assert.NoError(t, err, "Server should stop")
 }
 
@@ -45,37 +50,57 @@ func TestDatadogMetricsReceiver_Lifecycle(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 	cfg.(*Config).Endpoint = "localhost:0"
-	ddr, err := factory.CreateMetrics(context.Background(), receivertest.NewNopSettings(), cfg, consumertest.NewNop())
+	ddr, err := factory.CreateMetrics(t.Context(), receivertest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
 	assert.NoError(t, err, "Metrics receiver should be created")
 
-	err = ddr.Start(context.Background(), componenttest.NewNopHost())
+	err = ddr.Start(t.Context(), componenttest.NewNopHost())
 	assert.NoError(t, err, "Server should start")
 
-	err = ddr.Shutdown(context.Background())
+	err = ddr.Shutdown(t.Context())
+	assert.NoError(t, err, "Server should stop")
+}
+
+func TestDatadogLogsReceiver_Lifecycle(t *testing.T) {
+	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig()
+	cfg.(*Config).Endpoint = "localhost:0"
+	ddr, err := factory.CreateLogs(t.Context(), receivertest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
+	assert.NoError(t, err, "Logs receiver should be created")
+
+	err = ddr.Start(t.Context(), componenttest.NewNopHost())
+	assert.NoError(t, err, "Server should start")
+
+	err = ddr.Shutdown(t.Context())
 	assert.NoError(t, err, "Server should stop")
 }
 
 func TestDatadogServer(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.Endpoint = "localhost:0" // Using a randomly assigned address
+
+	ctx := t.Context()
+
 	dd, err := newDataDogReceiver(
+		ctx,
 		cfg,
-		receivertest.NewNopSettings(),
+		receivertest.NewNopSettings(metadata.Type),
 	)
 	dd.(*datadogReceiver).nextTracesConsumer = consumertest.NewNop()
 	require.NoError(t, err, "Must not error when creating receiver")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
 	require.NoError(t, dd.Start(ctx, componenttest.NewNopHost()))
 	t.Cleanup(func() {
-		require.NoError(t, dd.Shutdown(ctx), "Must not error shutting down")
+		// The test uses t.Parallel and the server should only be shutdown after all
+		// tests, so perform the shutdown inside t.Cleanup. Use a non-cancellable context,
+		// since the server may have to wait for some connections to be closed and the
+		// t.Context is already canceled when functions in the t.Cleanup list are called.
+		require.NoError(t, dd.Shutdown(context.WithoutCancel(ctx)), "Must not error shutting down")
 	})
 
 	for _, tc := range []struct {
-		name string
-		op   io.Reader
+		name     string
+		op       io.Reader
+		endpoint string
 
 		expectCode    int
 		expectContent string
@@ -83,26 +108,45 @@ func TestDatadogServer(t *testing.T) {
 		{
 			name:          "invalid data",
 			op:            strings.NewReader("{"),
+			endpoint:      "http://%s/v0.7/traces",
 			expectCode:    http.StatusBadRequest,
 			expectContent: "Unable to unmarshal reqs\n",
 		},
 		{
 			name:          "Fake featuresdiscovery",
 			op:            nil, // Content-length: 0.
+			endpoint:      "http://%s/v0.7/traces",
 			expectCode:    http.StatusBadRequest,
 			expectContent: "Fake featuresdiscovery\n",
 		},
+		{
+			name:          "Older version returns OK",
+			op:            strings.NewReader("[]"),
+			endpoint:      "http://%s/v0.3/traces",
+			expectCode:    http.StatusOK,
+			expectContent: "OK",
+		},
+		{
+			name:          "Older version returns JSON",
+			op:            strings.NewReader("[]"),
+			endpoint:      "http://%s/v0.4/traces",
+			expectCode:    http.StatusOK,
+			expectContent: "{}",
+		},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
 			req, err := http.NewRequest(
 				http.MethodPost,
-				fmt.Sprintf("http://%s/v0.7/traces", dd.(*datadogReceiver).address),
+				fmt.Sprintf(tc.endpoint, dd.(*datadogReceiver).address),
 				tc.op,
 			)
 			require.NoError(t, err, "Must not error when creating request")
+
+			// Because tests are parallel, and the call to shutdown is happening on a t.Cleanup,
+			// minimize the duration of connections to speed up the shutdown in the test cleanup.
+			req.Close = true
 
 			resp, err := http.DefaultClient.Do(req)
 			require.NoError(t, err, "Must not error performing request")
@@ -112,6 +156,55 @@ func TestDatadogServer(t *testing.T) {
 
 			assert.Equal(t, tc.expectContent, string(actual))
 			assert.Equal(t, tc.expectCode, resp.StatusCode, "Must match the expected status code")
+		})
+	}
+}
+
+func TestDatadogResponse(t *testing.T) {
+	tests := []struct {
+		name           string
+		err            error
+		expectedStatus int
+	}{
+		{
+			name:           "non-permanent error",
+			err:            errors.New("non-permanent error"),
+			expectedStatus: http.StatusServiceUnavailable,
+		},
+		{
+			name:           "permanent error",
+			err:            consumererror.NewPermanent(errors.New("non-permanent error")),
+			expectedStatus: http.StatusBadRequest,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := createDefaultConfig().(*Config)
+			cfg.Endpoint = "localhost:0" // Using a randomly assigned address
+
+			ctx := t.Context()
+
+			dd, err := newDataDogReceiver(
+				ctx,
+				cfg,
+				receivertest.NewNopSettings(metadata.Type),
+			)
+			require.NoError(t, err, "Must not error when creating receiver")
+			dd.(*datadogReceiver).nextTracesConsumer = consumertest.NewErr(tc.err)
+
+			require.NoError(t, dd.Start(ctx, componenttest.NewNopHost()))
+			defer func() {
+				require.NoError(t, dd.Shutdown(ctx), "Must not error shutting down")
+			}()
+
+			apiPayload := pb.TracerPayload{}
+			var reqBytes []byte
+			bytez, _ := apiPayload.MarshalMsg(reqBytes)
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://%s/v0.7/traces", dd.(*datadogReceiver).address), bytes.NewReader(bytez))
+			require.NoError(t, err, "Must not error creating request")
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err, "Must not error performing request")
+			require.Equal(t, tc.expectedStatus, resp.StatusCode)
 		})
 	}
 }
@@ -173,6 +266,7 @@ func TestDatadogInfoEndpoint(t *testing.T) {
 		"/api/v1/sketches",
 		"/api/beta/sketches",
 		"/intake",
+		"/intake/",
 		"/api/v1/distribution_points",
 		"/v0.6/stats"
 	],
@@ -201,6 +295,7 @@ func TestDatadogInfoEndpoint(t *testing.T) {
 		"/api/v1/sketches",
 		"/api/beta/sketches",
 		"/intake",
+		"/intake/",
 		"/api/v1/distribution_points",
 		"/v0.6/stats"
 	],
@@ -211,32 +306,31 @@ func TestDatadogInfoEndpoint(t *testing.T) {
 }`,
 		},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := createDefaultConfig().(*Config)
 			cfg.Endpoint = "localhost:0" // Using a randomly assigned address
 
+			ctx := t.Context()
+
 			dd, err := newDataDogReceiver(
+				ctx,
 				cfg,
-				receivertest.NewNopSettings(),
+				receivertest.NewNopSettings(metadata.Type),
 			)
 			require.NoError(t, err, "Must not error when creating receiver")
 
 			dd.(*datadogReceiver).nextTracesConsumer = tc.tracesConsumer
 			dd.(*datadogReceiver).nextMetricsConsumer = tc.metricsConsumer
 
-			ctx, cancel := context.WithCancel(context.Background())
-			t.Cleanup(cancel)
-
 			require.NoError(t, dd.Start(ctx, componenttest.NewNopHost()))
-			t.Cleanup(func() {
+			defer func() {
 				require.NoError(t, dd.Shutdown(ctx), "Must not error shutting down")
-			})
+			}()
 
 			req, err := http.NewRequest(
 				http.MethodPost,
 				fmt.Sprintf("http://%s/info", dd.(*datadogReceiver).address),
-				nil,
+				http.NoBody,
 			)
 			require.NoError(t, err, "Must not error when creating request")
 
@@ -256,16 +350,19 @@ func TestDatadogMetricsV1_EndToEnd(t *testing.T) {
 	cfg.Endpoint = "localhost:0" // Using a randomly assigned address
 	sink := new(consumertest.MetricsSink)
 
+	ctx := t.Context()
+
 	dd, err := newDataDogReceiver(
+		ctx,
 		cfg,
-		receivertest.NewNopSettings(),
+		receivertest.NewNopSettings(metadata.Type),
 	)
 	require.NoError(t, err, "Must not error when creating receiver")
 	dd.(*datadogReceiver).nextMetricsConsumer = sink
 
-	require.NoError(t, dd.Start(context.Background(), componenttest.NewNopHost()))
+	require.NoError(t, dd.Start(t.Context(), componenttest.NewNopHost()))
 	defer func() {
-		require.NoError(t, dd.Shutdown(context.Background()))
+		require.NoError(t, dd.Shutdown(t.Context()))
 	}()
 
 	metricsPayloadV1 := []byte(`{
@@ -318,16 +415,19 @@ func TestDatadogMetricsV2_EndToEnd(t *testing.T) {
 	cfg.Endpoint = "localhost:0" // Using a randomly assigned address
 	sink := new(consumertest.MetricsSink)
 
+	ctx := t.Context()
+
 	dd, err := newDataDogReceiver(
+		ctx,
 		cfg,
-		receivertest.NewNopSettings(),
+		receivertest.NewNopSettings(metadata.Type),
 	)
 	require.NoError(t, err, "Must not error when creating receiver")
 	dd.(*datadogReceiver).nextMetricsConsumer = sink
 
-	require.NoError(t, dd.Start(context.Background(), componenttest.NewNopHost()))
+	require.NoError(t, dd.Start(t.Context(), componenttest.NewNopHost()))
 	defer func() {
-		require.NoError(t, dd.Shutdown(context.Background()))
+		require.NoError(t, dd.Shutdown(t.Context()))
 	}()
 
 	metricsPayloadV2 := gogen.MetricPayload{
@@ -393,21 +493,106 @@ func TestDatadogMetricsV2_EndToEnd(t *testing.T) {
 	assert.Equal(t, pcommon.Timestamp(1636629071*1_000_000_000), metric.Sum().DataPoints().At(1).StartTimestamp())
 }
 
+func TestDatadogMetricsV2_EndToEndJSON(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Endpoint = "localhost:0" // Using a randomly assigned address
+	sink := new(consumertest.MetricsSink)
+
+	ctx := t.Context()
+
+	dd, err := newDataDogReceiver(
+		ctx,
+		cfg,
+		receivertest.NewNopSettings(metadata.Type),
+	)
+	require.NoError(t, err, "Must not error when creating receiver")
+	dd.(*datadogReceiver).nextMetricsConsumer = sink
+
+	require.NoError(t, dd.Start(t.Context(), componenttest.NewNopHost()))
+	defer func() {
+		require.NoError(t, dd.Shutdown(t.Context()))
+	}()
+
+	metricsPayloadV2 := []byte(`{
+		"series": [
+			{
+				"metric": "system.load.1",
+				"type": 1,
+				"points": [
+					{
+						"timestamp": 1636629071,
+						"value":     1.5
+					},
+					{
+						"timestamp": 1636629081,
+						"value":     2.0
+					}
+				],
+				"resources": [
+					{
+						"name": "dummyhost",
+						"type": "host"
+					}
+				]
+			}
+		]
+	}`)
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		fmt.Sprintf("http://%s/api/v2/series", dd.(*datadogReceiver).address),
+		io.NopCloser(bytes.NewReader(metricsPayloadV2)),
+	)
+
+	req.Header.Set("Content-Type", "application/json")
+
+	require.NoError(t, err, "Must not error when creating request")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err, "Must not error performing request")
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, multierr.Combine(err, resp.Body.Close()), "Must not error when reading body")
+	require.JSONEq(t, `{"errors": []}`, string(body), "Expected JSON response to be `{\"errors\": []}`, got %s", string(body))
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	mds := sink.AllMetrics()
+	require.Len(t, mds, 1)
+	got := mds[0]
+	require.Equal(t, 1, got.ResourceMetrics().Len())
+	metrics := got.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics()
+	assert.Equal(t, 1, metrics.Len())
+	metric := metrics.At(0)
+	assert.Equal(t, pmetric.MetricTypeSum, metric.Type())
+	assert.Equal(t, "system.load.1", metric.Name())
+	assert.Equal(t, pmetric.AggregationTemporalityDelta, metric.Sum().AggregationTemporality())
+	assert.False(t, metric.Sum().IsMonotonic())
+	assert.Equal(t, pcommon.Timestamp(1636629071*1_000_000_000), metric.Sum().DataPoints().At(0).Timestamp())
+	assert.Equal(t, 1.5, metric.Sum().DataPoints().At(0).DoubleValue())
+	assert.Equal(t, pcommon.Timestamp(0), metric.Sum().DataPoints().At(0).StartTimestamp())
+	assert.Equal(t, pcommon.Timestamp(1636629081*1_000_000_000), metric.Sum().DataPoints().At(1).Timestamp())
+	assert.Equal(t, 2.0, metric.Sum().DataPoints().At(1).DoubleValue())
+	assert.Equal(t, pcommon.Timestamp(1636629071*1_000_000_000), metric.Sum().DataPoints().At(1).StartTimestamp())
+}
+
 func TestDatadogSketches_EndToEnd(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.Endpoint = "localhost:0" // Using a randomly assigned address
 	sink := new(consumertest.MetricsSink)
 
+	ctx := t.Context()
+
 	dd, err := newDataDogReceiver(
+		ctx,
 		cfg,
-		receivertest.NewNopSettings(),
+		receivertest.NewNopSettings(metadata.Type),
 	)
 	require.NoError(t, err, "Must not error when creating receiver")
 	dd.(*datadogReceiver).nextMetricsConsumer = sink
 
-	require.NoError(t, dd.Start(context.Background(), componenttest.NewNopHost()))
+	require.NoError(t, dd.Start(t.Context(), componenttest.NewNopHost()))
 	defer func() {
-		require.NoError(t, dd.Shutdown(context.Background()))
+		require.NoError(t, dd.Shutdown(t.Context()))
 	}()
 
 	sketchPayload := gogen.SketchPayload{
@@ -485,16 +670,19 @@ func TestStats_EndToEnd(t *testing.T) {
 	cfg.Endpoint = "localhost:0" // Using a randomly assigned address
 	sink := new(consumertest.MetricsSink)
 
+	ctx := t.Context()
+
 	dd, err := newDataDogReceiver(
+		ctx,
 		cfg,
-		receivertest.NewNopSettings(),
+		receivertest.NewNopSettings(metadata.Type),
 	)
 	require.NoError(t, err, "Must not error when creating receiver")
 	dd.(*datadogReceiver).nextMetricsConsumer = sink
 
-	require.NoError(t, dd.Start(context.Background(), componenttest.NewNopHost()))
+	require.NoError(t, dd.Start(t.Context(), componenttest.NewNopHost()))
 	defer func() {
-		require.NoError(t, dd.Shutdown(context.Background()))
+		require.NoError(t, dd.Shutdown(t.Context()))
 	}()
 
 	clientStatsPayload := pb.ClientStatsPayload{
@@ -576,16 +764,19 @@ func TestDatadogServices_EndToEnd(t *testing.T) {
 	cfg.Endpoint = "localhost:0" // Using a randomly assigned address
 	sink := new(consumertest.MetricsSink)
 
+	ctx := t.Context()
+
 	dd, err := newDataDogReceiver(
+		ctx,
 		cfg,
-		receivertest.NewNopSettings(),
+		receivertest.NewNopSettings(metadata.Type),
 	)
 	require.NoError(t, err, "Must not error when creating receiver")
 	dd.(*datadogReceiver).nextMetricsConsumer = sink
 
-	require.NoError(t, dd.Start(context.Background(), componenttest.NewNopHost()))
+	require.NoError(t, dd.Start(t.Context(), componenttest.NewNopHost()))
 	defer func() {
-		require.NoError(t, dd.Shutdown(context.Background()))
+		require.NoError(t, dd.Shutdown(t.Context()))
 	}()
 
 	servicesPayload := []byte(`[
@@ -609,7 +800,7 @@ func TestDatadogServices_EndToEnd(t *testing.T) {
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, multierr.Combine(err, resp.Body.Close()), "Must not error when reading body")
-	require.Equal(t, "OK", string(body), "Expected response to be 'OK', got %s", string(body))
+	require.JSONEq(t, `{"status": "ok"}`, string(body), "Expected JSON response to be `{\"status\": \"ok\"}`, got %s", string(body))
 	require.Equal(t, http.StatusAccepted, resp.StatusCode)
 
 	mds := sink.AllMetrics()
@@ -630,4 +821,171 @@ func TestDatadogServices_EndToEnd(t *testing.T) {
 	assert.Equal(t, "test", environment.AsString())
 	hostName, _ := got.ResourceMetrics().At(0).Resource().Attributes().Get("host.name")
 	assert.Equal(t, "hosta", hostName.AsString())
+}
+
+func TestDatadogLogsV2_SingleLog_EndToEnd(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Endpoint = "localhost:0" // Using a randomly assigned address
+	sink := new(consumertest.LogsSink)
+
+	ctx := t.Context()
+
+	dd, err := newDataDogReceiver(
+		ctx,
+		cfg,
+		receivertest.NewNopSettings(metadata.Type),
+	)
+	require.NoError(t, err, "Must not error when creating receiver")
+	dd.(*datadogReceiver).nextLogsConsumer = sink
+
+	require.NoError(t, dd.Start(t.Context(), componenttest.NewNopHost()))
+	defer func() {
+		require.NoError(t, dd.Shutdown(t.Context()))
+	}()
+
+	logsPayloadV2 := &translator.DatadogLogPayload{
+		Source:   "agent",
+		Tags:     "image_name:gcr.io/datadoghq/agent,short_image:agent,image_tag:6.32.1,kube_app_instance:datadog-agent,pod_phase:running",
+		Hostname: "i-abc123",
+		Message:  "2025-09-21 09:12:36 UTC | TRACE | INFO | (comp/trace/agent/agent.go:211 in handleSignal) | Received signal 15 (terminated)",
+		Service:  "agent",
+		Status:   "info",
+	}
+
+	pb, err := json.Marshal(logsPayloadV2)
+	assert.NoError(t, err)
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		fmt.Sprintf("http://%s/api/v2/logs", dd.(*datadogReceiver).address),
+		io.NopCloser(bytes.NewReader(pb)),
+	)
+	require.NoError(t, err, "Must not error when creating request")
+	req.Header.Add("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err, "Must not error performing request")
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, multierr.Combine(err, resp.Body.Close()), "Must not error when reading body")
+	require.JSONEq(t, `{"errors": []}`, string(body), "Expected JSON response to be `{\"errors\": []}`, got %s", string(body))
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	theLogs := sink.AllLogs()
+	require.Len(t, theLogs, 1)
+
+	got := theLogs[0]
+	// 1 log record
+	require.Equal(t, 1, got.LogRecordCount())
+	// 1 resource log
+	require.Equal(t, 1, got.ResourceLogs().Len())
+	// 1 scope log
+	require.Equal(t, 1, got.ResourceLogs().At(0).ScopeLogs().Len())
+	// 1 scope log record
+	require.Equal(t, 1, got.ResourceLogs().At(0).ScopeLogs().At(0).LogRecords().Len())
+
+	theRecord := got.ResourceLogs().At(0).ScopeLogs().At(0).LogRecords().At(0)
+	assert.Equal(t, logsPayloadV2.Message, theRecord.Body().Str())
+
+	attributes := theRecord.Attributes().AsRaw()
+	assert.Equal(t, logsPayloadV2.Status, attributes["status"])
+	assert.Equal(t, logsPayloadV2.Hostname, attributes["hostname"])
+	assert.Equal(t, logsPayloadV2.Service, attributes["service"])
+	assert.Equal(t, logsPayloadV2.Timestamp, attributes["timestamp"])
+	assert.Equal(t, logsPayloadV2.Source, attributes["ddsource"])
+	assert.Equal(t, logsPayloadV2.Tags, attributes["ddtags"])
+}
+
+func TestDatadogLogsV2_MultipleLogs_EndToEnd(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Endpoint = "localhost:0" // Using a randomly assigned address
+	sink := new(consumertest.LogsSink)
+
+	ctx := t.Context()
+
+	dd, err := newDataDogReceiver(
+		ctx,
+		cfg,
+		receivertest.NewNopSettings(metadata.Type),
+	)
+	require.NoError(t, err, "Must not error when creating receiver")
+	dd.(*datadogReceiver).nextLogsConsumer = sink
+
+	require.NoError(t, dd.Start(t.Context(), componenttest.NewNopHost()))
+	defer func() {
+		require.NoError(t, dd.Shutdown(t.Context()))
+	}()
+
+	logsPayloadV2 := []*translator.DatadogLogPayload{
+		{
+			Source:   "agent",
+			Tags:     "image_name:gcr.io/datadoghq/agent,short_image:agent,image_tag:6.32.1,kube_app_instance:datadog-agent,pod_phase:running",
+			Hostname: "i-abc123",
+			Message:  "2025-09-21 09:12:36 UTC | TRACE | INFO | (comp/trace/agent/agent.go:123 in handleSignal) | Received signal 15 (terminated)",
+			Service:  "agent",
+			Status:   "info",
+		},
+		{
+			Source:   "agent",
+			Tags:     "image_name:gcr.io/datadoghq/agent,short_image:agent,image_tag:6.32.1,kube_app_instance:datadog-agent,pod_phase:running",
+			Hostname: "i-abc123",
+			Message:  "2025-09-21 09:13:12 UTC | TRACE | WARN | (comp/core/tagger/taggerimpl/remote/tagger.go:321 in run) | error received from remote tagger: rpc error: code = Canceled desc = context canceled",
+			Service:  "agent",
+			Status:   "warn",
+		},
+	}
+
+	pb, err := json.Marshal(logsPayloadV2)
+	assert.NoError(t, err)
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		fmt.Sprintf("http://%s/api/v2/logs", dd.(*datadogReceiver).address),
+		io.NopCloser(bytes.NewReader(pb)),
+	)
+	require.NoError(t, err, "Must not error when creating request")
+	req.Header.Add("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err, "Must not error performing request")
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, multierr.Combine(err, resp.Body.Close()), "Must not error when reading body")
+	require.JSONEq(t, `{"errors": []}`, string(body), "Expected JSON response to be `{\"errors\": []}`, got %s", string(body))
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	theLogs := sink.AllLogs()
+	require.Len(t, theLogs, 1)
+
+	got := theLogs[0]
+	// 2 log records
+	require.Equal(t, 2, got.LogRecordCount())
+	// 1 resource log
+	require.Equal(t, 1, got.ResourceLogs().Len())
+	// 1 scope log
+	require.Equal(t, 1, got.ResourceLogs().At(0).ScopeLogs().Len())
+	// 2 log records on the scope
+	require.Equal(t, 2, got.ResourceLogs().At(0).ScopeLogs().At(0).LogRecords().Len())
+
+	record1 := got.ResourceLogs().At(0).ScopeLogs().At(0).LogRecords().At(0)
+	assert.Equal(t, logsPayloadV2[0].Message, record1.Body().Str())
+
+	attributes := record1.Attributes().AsRaw()
+	assert.Equal(t, logsPayloadV2[0].Status, attributes["status"])
+	assert.Equal(t, logsPayloadV2[0].Hostname, attributes["hostname"])
+	assert.Equal(t, logsPayloadV2[0].Service, attributes["service"])
+	assert.Equal(t, logsPayloadV2[0].Timestamp, attributes["timestamp"])
+	assert.Equal(t, logsPayloadV2[0].Source, attributes["ddsource"])
+	assert.Equal(t, logsPayloadV2[0].Tags, attributes["ddtags"])
+
+	record2 := got.ResourceLogs().At(0).ScopeLogs().At(0).LogRecords().At(1)
+	assert.Equal(t, logsPayloadV2[1].Message, record2.Body().Str())
+
+	attributes = record2.Attributes().AsRaw()
+	assert.Equal(t, logsPayloadV2[1].Status, attributes["status"])
+	assert.Equal(t, logsPayloadV2[1].Hostname, attributes["hostname"])
+	assert.Equal(t, logsPayloadV2[1].Service, attributes["service"])
+	assert.Equal(t, logsPayloadV2[1].Timestamp, attributes["timestamp"])
+	assert.Equal(t, logsPayloadV2[1].Source, attributes["ddsource"])
+	assert.Equal(t, logsPayloadV2[1].Tags, attributes["ddtags"])
 }

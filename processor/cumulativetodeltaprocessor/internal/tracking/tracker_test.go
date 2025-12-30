@@ -40,7 +40,7 @@ func TestMetricTracker_Convert(t *testing.T) {
 	future := time.Now().Add(1 * time.Hour)
 
 	keepSubsequentTest := subTest{
-		name: "keep subsequet value",
+		name: "keep subsequent value",
 		value: ValuePoint{
 			ObservedTimestamp: pcommon.NewTimestampFromTime(future.Add(time.Minute)),
 			FloatValue:        225,
@@ -194,7 +194,7 @@ func TestMetricTracker_Convert(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.initValue.String(), func(t *testing.T) {
-			m := NewMetricTracker(context.Background(), zap.NewNop(), 0, tt.initValue)
+			m := NewMetricTracker(t.Context(), zap.NewNop(), 0, tt.initValue)
 
 			miSum := miSum
 			miSum.StartTimestamp = tt.metricStartTime
@@ -231,7 +231,7 @@ func TestMetricTracker_Convert(t *testing.T) {
 	}
 
 	t.Run("Invalid metric identity", func(t *testing.T) {
-		m := NewMetricTracker(context.Background(), zap.NewNop(), 0, InitialValueAuto)
+		m := NewMetricTracker(t.Context(), zap.NewNop(), 0, InitialValueAuto)
 		invalidID := miIntSum
 		invalidID.MetricType = pmetric.MetricTypeGauge
 		_, valid := m.Convert(MetricPoint{
@@ -242,9 +242,7 @@ func TestMetricTracker_Convert(t *testing.T) {
 				IntValue:          100,
 			},
 		})
-		if valid {
-			t.Error("Expected invalid for non cumulative metric")
-		}
+		assert.False(t, valid, "Expected invalid for non cumulative metric")
 	})
 }
 
@@ -259,29 +257,29 @@ func Test_metricTracker_removeStale(t *testing.T) {
 
 	type fields struct {
 		MaxStaleness time.Duration
-		States       map[string]*State
+		States       map[string]*state
 	}
 	tests := []struct {
 		name    string
 		fields  fields
-		wantOut map[string]*State
+		wantOut map[string]*state
 	}{
 		{
 			name: "Removes stale entry, leaves fresh entry",
 			fields: fields{
 				MaxStaleness: 0, // This logic isn't tested here
-				States: map[string]*State{
+				States: map[string]*state{
 					"stale": {
-						PrevPoint: stalePoint,
+						prevPoint: stalePoint,
 					},
 					"fresh": {
-						PrevPoint: freshPoint,
+						prevPoint: freshPoint,
 					},
 				},
 			},
-			wantOut: map[string]*State{
+			wantOut: map[string]*state{
 				"fresh": {
-					PrevPoint: freshPoint,
+					prevPoint: freshPoint,
 				},
 			},
 		},
@@ -297,9 +295,9 @@ func Test_metricTracker_removeStale(t *testing.T) {
 			}
 			tr.removeStale(currentTime)
 
-			gotOut := make(map[string]*State)
+			gotOut := make(map[string]*state)
 			tr.states.Range(func(key, value any) bool {
-				gotOut[key.(string)] = value.(*State)
+				gotOut[key.(string)] = value.(*state)
 				return true
 			})
 			assert.Equal(t, tt.wantOut, gotOut)
@@ -308,7 +306,7 @@ func Test_metricTracker_removeStale(t *testing.T) {
 }
 
 func Test_metricTracker_sweeper(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	sweepEvent := make(chan pcommon.Timestamp)
 	closed := &atomic.Bool{}
 
@@ -336,9 +334,7 @@ func Test_metricTracker_sweeper(t *testing.T) {
 		assert.LessOrEqual(t, tr.maxStaleness, time.Since(staleBefore.AsTime()))
 	}
 	cancel()
-	for range sweepEvent { // nolint
+	for range sweepEvent { //nolint:revive
 	}
-	if !closed.Load() {
-		t.Errorf("Sweeper did not terminate.")
-	}
+	assert.True(t, closed.Load(), "Sweeper did not terminate.")
 }

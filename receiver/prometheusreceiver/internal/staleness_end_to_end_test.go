@@ -30,6 +30,7 @@ import (
 	"go.opentelemetry.io/collector/processor"
 	"go.opentelemetry.io/collector/processor/batchprocessor"
 	"go.opentelemetry.io/collector/receiver"
+	"go.opentelemetry.io/collector/service/telemetry"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
@@ -46,7 +47,7 @@ func TestStalenessMarkersEndToEnd(t *testing.T) {
 		t.Skip("This test can take a long time")
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 
 	// 1. Setup the server that sends series that intermittently appear and disappear.
 	n := &atomic.Uint64{}
@@ -112,8 +113,6 @@ receivers:
           static_configs:
             - targets: [%q]
 
-processors:
-  batch:
 exporters:
   prometheusremotewrite:
     endpoint: %q
@@ -124,26 +123,28 @@ service:
   pipelines:
     metrics:
       receivers: [prometheus]
-      processors: [batch]
       exporters: [prometheusremotewrite]`, serverURL.Host, prweServer.URL)
 
 	confFile, err := os.CreateTemp(os.TempDir(), "conf-")
 	require.NoError(t, err)
 	defer os.Remove(confFile.Name())
-	_, err = confFile.Write([]byte(cfg))
+	_, err = confFile.WriteString(cfg)
 	require.NoError(t, err)
 	// 4. Run the OpenTelemetry Collector.
-	receivers, err := receiver.MakeFactoryMap(prometheusreceiver.NewFactory())
+	receivers, err := otelcol.MakeFactoryMap[receiver.Factory](prometheusreceiver.NewFactory())
 	require.NoError(t, err)
-	exporters, err := exporter.MakeFactoryMap(prometheusremotewriteexporter.NewFactory())
+	exporters, err := otelcol.MakeFactoryMap[exporter.Factory](prometheusremotewriteexporter.NewFactory())
 	require.NoError(t, err)
-	processors, err := processor.MakeFactoryMap(batchprocessor.NewFactory())
+	processors, err := otelcol.MakeFactoryMap[processor.Factory](batchprocessor.NewFactory())
 	require.NoError(t, err)
 
 	factories := otelcol.Factories{
 		Receivers:  receivers,
 		Exporters:  exporters,
 		Processors: processors,
+		Telemetry: telemetry.NewFactory(
+			func() component.Config { return struct{}{} },
+		),
 	}
 
 	appSettings := otelcol.CollectorSettings{
@@ -171,7 +172,7 @@ service:
 	require.NoError(t, err)
 
 	go func() {
-		assert.NoError(t, app.Run(context.Background()))
+		assert.NoError(t, app.Run(t.Context()))
 	}()
 	defer app.Shutdown()
 
@@ -188,7 +189,7 @@ service:
 
 	// 5. Let's wait on 10 fetches.
 	var wReqL []*prompb.WriteRequest
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		wReqL = append(wReqL, <-prweUploads)
 	}
 	defer cancel()

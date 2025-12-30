@@ -20,7 +20,7 @@ type prometheusExporter struct {
 	config       Config
 	name         string
 	endpoint     string
-	shutdownFunc func() error
+	shutdownFunc func(ctx context.Context) error
 	handler      http.Handler
 	collector    *collector
 	registry     *prometheus.Registry
@@ -35,6 +35,12 @@ func newPrometheusExporter(config *Config, set exporter.Settings) (*prometheusEx
 		return nil, errBlankPrometheusAddress
 	}
 
+	// Return error early because newCollector
+	// will call logger.Error if it fails to build the namespace.
+	if set.Logger == nil {
+		return nil, errors.New("nil logger")
+	}
+
 	collector := newCollector(config, set.Logger)
 	registry := prometheus.NewRegistry()
 	_ = registry.Register(collector)
@@ -44,7 +50,7 @@ func newPrometheusExporter(config *Config, set exporter.Settings) (*prometheusEx
 		endpoint:     addr,
 		collector:    collector,
 		registry:     registry,
-		shutdownFunc: func() error { return nil },
+		shutdownFunc: func(_ context.Context) error { return nil },
 		handler: promhttp.HandlerFor(
 			registry,
 			promhttp.HandlerOpts{
@@ -63,13 +69,15 @@ func (pe *prometheusExporter) Start(ctx context.Context, host component.Host) er
 		return err
 	}
 
-	pe.shutdownFunc = ln.Close
-
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", pe.handler)
-	srv, err := pe.config.ToServer(ctx, host, pe.settings, mux)
+	srv, err := pe.config.ToServer(ctx, host.GetExtensions(), pe.settings, mux)
 	if err != nil {
-		return err
+		lnerr := ln.Close()
+		return errors.Join(err, lnerr)
+	}
+	pe.shutdownFunc = func(ctx context.Context) error {
+		return srv.Shutdown(ctx)
 	}
 	go func() {
 		_ = srv.Serve(ln)
@@ -88,6 +96,6 @@ func (pe *prometheusExporter) ConsumeMetrics(_ context.Context, md pmetric.Metri
 	return nil
 }
 
-func (pe *prometheusExporter) Shutdown(context.Context) error {
-	return pe.shutdownFunc()
+func (pe *prometheusExporter) Shutdown(ctx context.Context) error {
+	return pe.shutdownFunc(ctx)
 }

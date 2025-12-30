@@ -46,13 +46,14 @@ func createMetricsExporter(
 		return nil, err
 	}
 
-	exporter, err := exporterhelper.NewMetricsExporter(
+	exporter, err := exporterhelper.NewMetrics(
 		ctx,
 		set,
 		cfg,
 		prometheus.ConsumeMetrics,
 		exporterhelper.WithStart(prometheus.Start),
 		exporterhelper.WithShutdown(prometheus.Shutdown),
+		exporterhelper.WithQueue(pcfg.QueueBatchConfig),
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: true}),
 	)
 	if err != nil {

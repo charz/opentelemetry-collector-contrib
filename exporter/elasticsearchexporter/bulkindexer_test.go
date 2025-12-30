@@ -4,20 +4,30 @@
 package elasticsearchexporter
 
 import (
-	"context"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
-	"time"
 
-	"github.com/elastic/go-elasticsearch/v7"
+	"github.com/elastic/go-docappender/v2"
+	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/client"
+	"go.opentelemetry.io/collector/component/componenttest"
+	"go.opentelemetry.io/collector/config/configoptional"
+	"go.opentelemetry.io/collector/exporter/exporterhelper"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest"
 	"go.uber.org/zap/zaptest/observer"
+
+	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/elasticsearchexporter/internal/metadata"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/elasticsearchexporter/internal/metadatatest"
 )
 
 var defaultRoundTripFunc = func(*http.Request) (*http.Response, error) {
@@ -50,148 +60,221 @@ const successResp = `{
   ]
 }`
 
-func TestAsyncBulkIndexer_flushOnClose(t *testing.T) {
-	cfg := Config{NumWorkers: 1, Flush: FlushSettings{Interval: time.Hour, Bytes: 2 << 30}}
-	client, err := elasticsearch.NewClient(elasticsearch.Config{Transport: &mockTransport{
-		RoundTripFunc: func(*http.Request) (*http.Response, error) {
-			return &http.Response{
-				Header: http.Header{"X-Elastic-Product": []string{"Elasticsearch"}},
-				Body:   io.NopCloser(strings.NewReader(successResp)),
-			}, nil
-		},
-	}})
-	require.NoError(t, err)
-
-	bulkIndexer, err := newAsyncBulkIndexer(zap.NewNop(), client, &cfg)
-	require.NoError(t, err)
-	session, err := bulkIndexer.StartSession(context.Background())
-	require.NoError(t, err)
-
-	assert.NoError(t, session.Add(context.Background(), "foo", strings.NewReader(`{"foo": "bar"}`), nil))
-	assert.NoError(t, bulkIndexer.Close(context.Background()))
-	assert.Equal(t, int64(1), bulkIndexer.stats.docsIndexed.Load())
-}
-
-func TestAsyncBulkIndexer_flush(t *testing.T) {
+func TestSyncBulkIndexer(t *testing.T) {
 	tests := []struct {
-		name   string
-		config Config
+		name         string
+		responseBody string
+		wantMessage  string
+		wantFields   []zap.Field
 	}{
 		{
-			name:   "flush.bytes",
-			config: Config{NumWorkers: 1, Flush: FlushSettings{Interval: time.Hour, Bytes: 1}},
+			name:         "success",
+			responseBody: successResp,
 		},
 		{
-			name:   "flush.interval",
-			config: Config{NumWorkers: 1, Flush: FlushSettings{Interval: 50 * time.Millisecond, Bytes: 2 << 30}},
+			name:         "document_error_with_metadata",
+			responseBody: `{"items":[{"create":{"_index":"foo","status":400,"error":{"type":"version_conflict_engine_exception","reason":"document already exists"}}}]}`,
+			wantMessage:  "failed to index document",
+			wantFields:   []zap.Field{zap.Strings("x-test", []string{"test"})},
 		},
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			client, err := elasticsearch.NewClient(elasticsearch.Config{Transport: &mockTransport{
-				RoundTripFunc: func(*http.Request) (*http.Response, error) {
+			var reqCnt atomic.Int64
+			cfg := Config{
+				QueueBatchConfig: configoptional.Default(exporterhelper.QueueBatchConfig{
+					NumConsumers: 1,
+				}),
+				MetadataKeys: []string{"x-test"},
+			}
+			esClient, err := elasticsearch.NewClient(elasticsearch.Config{Transport: &mockTransport{
+				RoundTripFunc: func(r *http.Request) (*http.Response, error) {
+					if r.URL.Path == "/_bulk" {
+						reqCnt.Add(1)
+					}
 					return &http.Response{
-						Header: http.Header{"X-Elastic-Product": []string{"Elasticsearch"}},
-						Body:   io.NopCloser(strings.NewReader(successResp)),
+						Header:     http.Header{"X-Elastic-Product": []string{"Elasticsearch"}},
+						Body:       io.NopCloser(strings.NewReader(tt.responseBody)),
+						StatusCode: http.StatusOK,
 					}, nil
 				},
 			}})
 			require.NoError(t, err)
 
-			bulkIndexer, err := newAsyncBulkIndexer(zap.NewNop(), client, &tt.config)
-			require.NoError(t, err)
-			session, err := bulkIndexer.StartSession(context.Background())
+			ct := componenttest.NewTelemetry()
+			tb, err := metadata.NewTelemetryBuilder(
+				metadatatest.NewSettings(ct).TelemetrySettings,
+			)
 			require.NoError(t, err)
 
-			assert.NoError(t, session.Add(context.Background(), "foo", strings.NewReader(`{"foo": "bar"}`), nil))
-			// should flush
-			time.Sleep(100 * time.Millisecond)
-			assert.Equal(t, int64(1), bulkIndexer.stats.docsIndexed.Load())
-			assert.NoError(t, bulkIndexer.Close(context.Background()))
+			core, observed := observer.New(zap.NewAtomicLevelAt(zapcore.DebugLevel))
+			bi := newSyncBulkIndexer(esClient, &cfg, false, tb, zap.New(core))
+
+			info := client.Info{Metadata: client.NewMetadata(map[string][]string{"x-test": {"test"}})}
+			ctx := client.NewContext(t.Context(), info)
+			session := bi.StartSession(ctx)
+			assert.NoError(t, session.Add(ctx, "foo", "", "", strings.NewReader(`{"foo": "bar"}`), nil, docappender.ActionCreate))
+			assert.Equal(t, int64(0), reqCnt.Load()) // requests will not flush unless flush is called explicitly
+			assert.NoError(t, session.Flush(ctx))
+			assert.Equal(t, int64(1), reqCnt.Load())
+			session.End()
+			assert.NoError(t, bi.Close(ctx))
+
+			metadatatest.AssertEqualElasticsearchBulkRequestsCount(t, ct, []metricdata.DataPoint[int64]{
+				{
+					Value: 1,
+					Attributes: attribute.NewSet(
+						attribute.String("outcome", "success"), // bulk request itself is successful
+						attribute.StringSlice("x-test", []string{"test"}),
+						attribute.Key("http.response.status_code").Int(http.StatusOK),
+					),
+				},
+			}, metricdatatest.IgnoreTimestamp())
+			metadatatest.AssertEqualElasticsearchDocsReceived(t, ct, []metricdata.DataPoint[int64]{
+				{
+					Value: 1,
+					Attributes: attribute.NewSet(
+						attribute.StringSlice("x-test", []string{"test"}),
+					),
+				},
+			}, metricdatatest.IgnoreTimestamp())
+
+			// For failure cases, verify error.type attribute is present
+			attrs := []attribute.KeyValue{
+				attribute.StringSlice("x-test", []string{"test"}),
+				attribute.String("outcome", "success"),
+			}
+			if tt.wantMessage != "" {
+				attrs = []attribute.KeyValue{
+					attribute.StringSlice("x-test", []string{"test"}),
+					attribute.String("outcome", "failed_client"),
+					attribute.String("error.type", "version_conflict_engine_exception"),
+				}
+			}
+			metadatatest.AssertEqualElasticsearchDocsProcessed(t, ct, []metricdata.DataPoint[int64]{
+				{
+					Value:      1,
+					Attributes: attribute.NewSet(attrs...),
+				},
+			}, metricdatatest.IgnoreTimestamp())
+			metadatatest.AssertEqualElasticsearchFlushedBytes(t, ct, []metricdata.DataPoint[int64]{
+				{
+					Value: 43, // hard-coding the flush bytes since the input is fixed
+					Attributes: attribute.NewSet(
+						attribute.StringSlice("x-test", []string{"test"}),
+					),
+				},
+			}, metricdatatest.IgnoreTimestamp())
+			metadatatest.AssertEqualElasticsearchFlushedUncompressedBytes(t, ct, []metricdata.DataPoint[int64]{
+				{
+					Value: 43, // hard-coding the flush bytes since the input is fixed
+					Attributes: attribute.NewSet(
+						attribute.StringSlice("x-test", []string{"test"}),
+					),
+				},
+			}, metricdatatest.IgnoreTimestamp())
+
+			// Assert logs
+			if tt.wantMessage != "" {
+				messages := observed.FilterMessage(tt.wantMessage)
+				require.Equal(t, 1, messages.Len(), "message not found; observed.All()=%v", observed.All())
+				for _, wantField := range tt.wantFields {
+					assert.Equal(t, 1, messages.FilterField(wantField).Len(), "message with field not found; observed.All()=%v", observed.All())
+				}
+			}
 		})
 	}
 }
 
-func TestAsyncBulkIndexer_flush_error(t *testing.T) {
+func TestQueryParamsParsedFromEndpoints(t *testing.T) {
+	client, err := elasticsearch.NewDefaultClient()
+	require.NoError(t, err)
+	cfg := createDefaultConfig().(*Config)
+	cfg.Endpoints = []string{"http://localhost:9200?pipeline=test-pipeline"}
+
+	bi := bulkIndexerConfig(client, cfg, true, zaptest.NewLogger(t))
+	require.Equal(t, map[string][]string{
+		"pipeline": {"test-pipeline"},
+	}, bi.QueryParams)
+}
+
+func TestNewBulkIndexer(t *testing.T) {
+	client, err := elasticsearch.NewDefaultClient()
+	require.NoError(t, err)
+	cfg := createDefaultConfig()
+
+	bi := newBulkIndexer(client, cfg.(*Config), true, nil, nil)
+	t.Cleanup(func() { bi.Close(t.Context()) })
+}
+
+func TestGetErrorHint(t *testing.T) {
 	tests := []struct {
-		name          string
-		roundTripFunc func(*http.Request) (*http.Response, error)
-		wantMessage   string
-		wantFields    []zap.Field
+		name      string
+		index     string
+		errorType string
+		want      string
 	}{
 		{
-			name: "500",
-			roundTripFunc: func(*http.Request) (*http.Response, error) {
-				return &http.Response{
-					StatusCode: 500,
-					Header:     http.Header{"X-Elastic-Product": []string{"Elasticsearch"}},
-					Body:       io.NopCloser(strings.NewReader("error")),
-				}, nil
-			},
-			wantMessage: "bulk indexer flush error",
+			name:      "version_conflict_engine_exception with .ds-metrics- prefix",
+			index:     ".ds-metrics-foo",
+			errorType: "version_conflict_engine_exception",
+			want:      errorHintKnownIssues,
 		},
 		{
-			name: "429",
-			roundTripFunc: func(*http.Request) (*http.Response, error) {
-				return &http.Response{
-					StatusCode: 429,
-					Header:     http.Header{"X-Elastic-Product": []string{"Elasticsearch"}},
-					Body:       io.NopCloser(strings.NewReader("error")),
-				}, nil
-			},
-			wantMessage: "bulk indexer flush error",
+			name:      "illegal_argument_exception with .otel- in index (OTel mapping mode)",
+			index:     "logs-generic.otel-default",
+			errorType: "illegal_argument_exception",
+			want:      errorHintOTelMappingMode,
 		},
 		{
-			name: "transport error",
-			roundTripFunc: func(*http.Request) (*http.Response, error) {
-				return nil, errors.New("transport error")
-			},
-			wantMessage: "bulk indexer flush error",
+			name:      "illegal_argument_exception with .otel- in metrics index",
+			index:     "metrics-generic.otel-default",
+			errorType: "illegal_argument_exception",
+			want:      errorHintOTelMappingMode,
 		},
 		{
-			name: "known version conflict error",
-			roundTripFunc: func(*http.Request) (*http.Response, error) {
-				return &http.Response{
-					StatusCode: 200,
-					Header:     http.Header{"X-Elastic-Product": []string{"Elasticsearch"}},
-					Body: io.NopCloser(strings.NewReader(
-						`{"items":[{"create":{"_index":".ds-metrics-generic.otel-default","status":400,"error":{"type":"version_conflict_engine_exception","reason":""}}}]}`)),
-				}, nil
-			},
-			wantMessage: "failed to index document",
-			wantFields:  []zap.Field{zap.String("hint", "check the \"Known issues\" section of Elasticsearch Exporter docs")},
+			name:      "illegal_argument_exception with .otel- in traces index",
+			index:     "traces-generic.otel-default",
+			errorType: "illegal_argument_exception",
+			want:      errorHintOTelMappingMode,
+		},
+		{
+			name:      "illegal_argument_exception without .otel- (not OTel mapping mode)",
+			index:     "logs-generic-default",
+			errorType: "illegal_argument_exception",
+			want:      "",
+		},
+		{
+			name:      "illegal_argument_exception with .otel but not as suffix (should not match)",
+			index:     "logs-generic.oteldefault",
+			errorType: "illegal_argument_exception",
+			want:      "",
+		},
+		{
+			name:      "other error type with .otel-",
+			index:     "logs-generic.otel-default",
+			errorType: "mapper_parsing_exception",
+			want:      "",
+		},
+		{
+			name:      "version_conflict_engine_exception without .ds-metrics- prefix",
+			index:     "logs-foo",
+			errorType: "version_conflict_engine_exception",
+			want:      "",
+		},
+		{
+			name:      "empty index and error type",
+			index:     "",
+			errorType: "",
+			want:      "",
 		},
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := Config{NumWorkers: 1, Flush: FlushSettings{Interval: time.Hour, Bytes: 1}}
-			client, err := elasticsearch.NewClient(elasticsearch.Config{Transport: &mockTransport{
-				RoundTripFunc: tt.roundTripFunc,
-			}})
-			require.NoError(t, err)
-			core, observed := observer.New(zap.NewAtomicLevelAt(zapcore.DebugLevel))
-
-			bulkIndexer, err := newAsyncBulkIndexer(zap.New(core), client, &cfg)
-			require.NoError(t, err)
-			session, err := bulkIndexer.StartSession(context.Background())
-			require.NoError(t, err)
-
-			assert.NoError(t, session.Add(context.Background(), "foo", strings.NewReader(`{"foo": "bar"}`), nil))
-			// should flush
-			time.Sleep(100 * time.Millisecond)
-			assert.Equal(t, int64(0), bulkIndexer.stats.docsIndexed.Load())
-			assert.NoError(t, bulkIndexer.Close(context.Background()))
-			messages := observed.FilterMessage(tt.wantMessage)
-			require.Equal(t, 1, messages.Len(), "message not found; observed.All()=%v", observed.All())
-			for _, wantField := range tt.wantFields {
-				assert.Equal(t, 1, messages.FilterField(wantField).Len(), "message with field not found; observed.All()=%v", observed.All())
-			}
+			got := getErrorHint(tt.index, tt.errorType)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/featuregate"
 	"go.opentelemetry.io/collector/receiver/receivertest"
 	"go.uber.org/zap"
@@ -20,7 +21,7 @@ import (
 )
 
 func TestScrape(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	mockServer := mock.MockServer(t, false)
 	defer mockServer.Close()
 
@@ -35,11 +36,16 @@ func TestScrape(t *testing.T) {
 }
 
 func TestScrapeConfigsEnabled(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	mockServer := mock.MockServer(t, false)
 	defer mockServer.Close()
 
 	optConfigs := metadata.DefaultMetricsBuilderConfig()
+	optConfigs.Metrics.VcenterHostMemoryCapacity.Enabled = true
+	optConfigs.Metrics.VcenterVMMemoryGranted.Enabled = true
+	optConfigs.Metrics.VcenterVMNetworkBroadcastPacketRate.Enabled = true
+	optConfigs.Metrics.VcenterVMNetworkMulticastPacketRate.Enabled = true
+	optConfigs.Metrics.VcenterVMCPUTime.Enabled = true
 	setResourcePoolMemoryUsageAttrFeatureGate(t, true)
 
 	cfg := &Config{
@@ -53,7 +59,7 @@ func TestScrapeConfigsEnabled(t *testing.T) {
 }
 
 func TestScrape_TLS(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	mockServer := mock.MockServer(t, true)
 	defer mockServer.Close()
 
@@ -71,7 +77,7 @@ func TestScrape_TLS(t *testing.T) {
 }
 
 func testScrape(ctx context.Context, t *testing.T, cfg *Config, fileName string) {
-	scraper := newVmwareVcenterScraper(zap.NewNop(), cfg, receivertest.NewNopSettings())
+	scraper := newVmwareVcenterScraper(zap.NewNop(), cfg, receivertest.NewNopSettings(metadata.Type))
 
 	metrics, err := scraper.scrape(ctx)
 	require.NoError(t, err)
@@ -108,13 +114,13 @@ func setResourcePoolMemoryUsageAttrFeatureGate(t *testing.T, val bool) {
 }
 
 func TestScrape_NoClient(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	scraper := &vcenterMetricScraper{
 		client: nil,
 		config: &Config{
 			Endpoint: "http://vcsa.localnet",
 		},
-		mb:     metadata.NewMetricsBuilder(metadata.DefaultMetricsBuilderConfig(), receivertest.NewNopSettings()),
+		mb:     metadata.NewMetricsBuilder(metadata.DefaultMetricsBuilderConfig(), receivertest.NewNopSettings(metadata.Type)),
 		logger: zap.NewNop(),
 	}
 	metrics, err := scraper.scrape(ctx)
@@ -143,10 +149,10 @@ func TestStartFailures_Metrics(t *testing.T) {
 		},
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	for _, tc := range cases {
-		scraper := newVmwareVcenterScraper(zap.NewNop(), tc.cfg, receivertest.NewNopSettings())
-		err := scraper.Start(ctx, nil)
+		scraper := newVmwareVcenterScraper(zap.NewNop(), tc.cfg, receivertest.NewNopSettings(metadata.Type))
+		err := scraper.Start(ctx, componenttest.NewNopHost())
 		if tc.err != nil {
 			require.ErrorContains(t, err, tc.err.Error())
 		} else {

@@ -39,7 +39,7 @@ type configuration struct {
 	CollectorGRPCServerSettings configgrpc.ServerConfig
 }
 
-// Receiver type is used to receive spans that were originally intended to be sent to Skywaking.
+// Receiver type is used to receive spans that were originally intended to be sent to Skywalking.
 // This receiver is basically a Skywalking collector.
 type swReceiver struct {
 	config *configuration
@@ -141,7 +141,7 @@ func (sr *swReceiver) startCollector(host component.Host) error {
 
 		nr := mux.NewRouter()
 		nr.HandleFunc("/v3/segments", sr.traceReceiver.HTTPHandler).Methods(http.MethodPost)
-		sr.collectorServer, cerr = sr.config.CollectorHTTPSettings.ToServer(ctx, host, sr.settings.TelemetrySettings, nr)
+		sr.collectorServer, cerr = sr.config.CollectorHTTPSettings.ToServer(ctx, host.GetExtensions(), sr.settings.TelemetrySettings, nr)
 		if cerr != nil {
 			return cerr
 		}
@@ -157,7 +157,7 @@ func (sr *swReceiver) startCollector(host component.Host) error {
 
 	if sr.collectorGRPCEnabled() {
 		var err error
-		sr.grpc, err = sr.config.CollectorGRPCServerSettings.ToServer(ctx, host, sr.settings.TelemetrySettings)
+		sr.grpc, err = sr.config.CollectorGRPCServerSettings.ToServer(ctx, host.GetExtensions(), sr.settings.TelemetrySettings)
 		if err != nil {
 			return fmt.Errorf("failed to build the options for the Skywalking gRPC Collector: %w", err)
 		}

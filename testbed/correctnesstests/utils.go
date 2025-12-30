@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"go.uber.org/zap"
+
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/common/testutil"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/testbed/dataconnectors"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/testbed/datareceivers"
@@ -18,29 +20,33 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/testbed/testbed"
 )
 
+type ProcessorNameAndConfigBody struct {
+	Name string
+	Body string
+}
+
 // CreateConfigYaml creates a yaml config for an otel collector given a testbed sender, testbed receiver, any
 // processors, and a pipeline type. A collector created from the resulting yaml string should be able to talk
 // the specified sender and receiver.
 func CreateConfigYaml(
-	t testing.TB,
+	tb testing.TB,
 	sender testbed.DataSender,
 	receiver testbed.DataReceiver,
 	connector testbed.DataConnector,
-	processors map[string]string,
+	processors []ProcessorNameAndConfigBody,
 ) string {
-
 	// Prepare extra processor config section and comma-separated list of extra processor
 	// names to use in corresponding "processors" settings.
 	processorsSections := ""
 	processorsList := ""
 	if len(processors) > 0 {
 		first := true
-		for name, cfg := range processors {
-			processorsSections += cfg + "\n"
+		for i := range processors {
+			processorsSections += processors[i].Body + "\n"
 			if !first {
 				processorsList += ","
 			}
-			processorsList += name
+			processorsList += processors[i].Name
 			first = false
 		}
 	}
@@ -54,7 +60,7 @@ func CreateConfigYaml(
 	case testbed.LogDataSender:
 		pipeline1 = "logs"
 	default:
-		t.Error("Invalid DataSender type")
+		tb.Error("Invalid DataSender type")
 	}
 
 	if connector != nil {
@@ -73,7 +79,12 @@ connectors:%v
 service:
   telemetry:
     metrics:
-      address: 127.0.0.1:%d
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: '127.0.0.1'
+                port: %d
     logs:
       level: "debug"
   extensions:
@@ -92,7 +103,7 @@ service:
 			receiver.GenConfigYAMLStr(),
 			processorsSections,
 			connector.GenConfigYAMLStr(),
-			testutil.GetAvailablePort(t),
+			testutil.GetAvailablePort(tb),
 			pipeline1,
 			sender.ProtocolName(),
 			processorsList,
@@ -114,7 +125,14 @@ extensions:
 service:
   telemetry:
     metrics:
-      address: 127.0.0.1:%d
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: '127.0.0.1'
+                port: %d
+    logs:
+      level: "debug"
   extensions:
   pipelines:
     %s:
@@ -128,7 +146,7 @@ service:
 		sender.GenConfigYAMLStr(),
 		receiver.GenConfigYAMLStr(),
 		processorsSections,
-		testutil.GetAvailablePort(t),
+		testutil.GetAvailablePort(tb),
 		pipeline1,
 		sender.ProtocolName(),
 		processorsList,
@@ -176,14 +194,20 @@ func LoadPictOutputPipelineDefs(fileName string) ([]PipelineDef, error) {
 	return defs, err
 }
 
+func newDbgLogger() *zap.Logger {
+	logger, err := zap.NewDevelopment(zap.Fields(zap.String("type", "testbed")))
+	if err != nil {
+		panic("Cannot create logger " + err.Error())
+	}
+	return logger
+}
+
 // ConstructTraceSender creates a testbed trace sender from the passed-in trace sender identifier.
 func ConstructTraceSender(t *testing.T, receiver string) testbed.DataSender {
 	var sender testbed.DataSender
 	switch receiver {
 	case "otlp":
 		sender = testbed.NewOTLPTraceDataSender(testbed.DefaultHost, testutil.GetAvailablePort(t))
-	case "opencensus":
-		sender = datasenders.NewOCTraceDataSender(testbed.DefaultHost, testutil.GetAvailablePort(t))
 	case "jaeger":
 		sender = datasenders.NewJaegerGRPCDataSender(testbed.DefaultHost, testutil.GetAvailablePort(t))
 	case "zipkin":
@@ -200,8 +224,10 @@ func ConstructMetricsSender(t *testing.T, receiver string) testbed.MetricDataSen
 	switch receiver {
 	case "otlp":
 		sender = testbed.NewOTLPMetricDataSender(testbed.DefaultHost, testutil.GetAvailablePort(t))
-	case "opencensus":
-		sender = datasenders.NewOCMetricDataSender(testbed.DefaultHost, testutil.GetAvailablePort(t))
+	case "stef":
+		s := datasenders.NewStefDataSender(testbed.DefaultHost, testutil.GetAvailablePort(t))
+		s.Logger = newDbgLogger()
+		sender = s
 	case "prometheus":
 		sender = datasenders.NewPrometheusDataSender(testbed.DefaultHost, testutil.GetAvailablePort(t))
 	default:
@@ -216,8 +242,10 @@ func ConstructReceiver(t *testing.T, exporter string) testbed.DataReceiver {
 	switch exporter {
 	case "otlp":
 		receiver = testbed.NewOTLPDataReceiver(testutil.GetAvailablePort(t))
-	case "opencensus":
-		receiver = datareceivers.NewOCDataReceiver(testutil.GetAvailablePort(t))
+	case "stef":
+		r := datareceivers.NewStefDataReceiver(testutil.GetAvailablePort(t))
+		r.Logger = newDbgLogger()
+		receiver = r
 	case "jaeger":
 		receiver = datareceivers.NewJaegerDataReceiver(testutil.GetAvailablePort(t))
 	case "zipkin":
@@ -230,7 +258,7 @@ func ConstructReceiver(t *testing.T, exporter string) testbed.DataReceiver {
 	return receiver
 }
 
-func ConstructConnector(t *testing.T, connector string, receiverType string) testbed.DataConnector {
+func ConstructConnector(t *testing.T, connector, receiverType string) testbed.DataConnector {
 	var dataconnector testbed.DataConnector
 	switch connector {
 	case "spanmetrics":

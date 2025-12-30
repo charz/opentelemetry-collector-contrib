@@ -5,6 +5,7 @@ package translation // import "github.com/open-telemetry/opentelemetry-collector
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -46,7 +47,7 @@ const (
 
 	// ActionCopyMetrics copies metrics using Rule.Mapping.
 	// Rule.DimensionKey and Rule.DimensionValues can be used to filter datapoints that must be copied,
-	// if these fields are set, only metics having a dimension with key == Rule.DimensionKey and
+	// if these fields are set, only metrics having a dimension with key == Rule.DimensionKey and
 	// value in Rule.DimensionValues will be copied.
 	ActionCopyMetrics Action = "copy_metrics"
 
@@ -177,7 +178,7 @@ type Rule struct {
 	// DimensionKey is used by "split_metric" translation rule action to specify dimension key
 	// that will be used to translate the metric datapoints. Datapoints that don't have
 	// the specified dimension key will not be translated.
-	// DimensionKey is also used by "copy_metrics" for filterring.
+	// DimensionKey is also used by "copy_metrics" for filtering.
 	DimensionKey string `mapstructure:"dimension_key"`
 
 	// DimensionValues is used by "copy_metrics" to filter out datapoints with dimensions values
@@ -246,7 +247,8 @@ func NewMetricTranslator(rules []Rule, ttl int64, done chan struct{}) (*MetricTr
 
 func validateTranslationRules(rules []Rule) error {
 	var renameDimensionKeysFound bool
-	for _, tr := range rules {
+	for i := range rules {
+		tr := &rules[i]
 		switch tr.Action {
 		case ActionRenameDimensionKeys:
 			if tr.Mapping == nil {
@@ -351,7 +353,8 @@ func validateTranslationRules(rules []Rule) error {
 // createDimensionsMap creates an additional map for dimensions
 // from ActionRenameDimensionKeys actions in rules.
 func createDimensionsMap(rules []Rule) map[string]string {
-	for _, tr := range rules {
+	for i := range rules {
+		tr := &rules[i]
 		if tr.Action == ActionRenameDimensionKeys {
 			return tr.Mapping
 		}
@@ -360,7 +363,8 @@ func createDimensionsMap(rules []Rule) map[string]string {
 }
 
 func processRules(rules []Rule) error {
-	for i, tr := range rules {
+	for i := range rules {
+		tr := &rules[i]
 		if tr.Action == ActionDropDimensions {
 			// Set metric name filter, if metric name(s) are specified on the rule.
 			// When "drop_dimensions" actions is not scoped to a metric name, the
@@ -402,7 +406,8 @@ func (mp *MetricTranslator) Start() {
 func (mp *MetricTranslator) TranslateDataPoints(logger *zap.Logger, sfxDataPoints []*sfxpb.DataPoint) []*sfxpb.DataPoint {
 	processedDataPoints := sfxDataPoints
 
-	for _, tr := range mp.rules {
+	for i := range mp.rules {
+		tr := &mp.rules[i]
 		switch tr.Action {
 		case ActionRenameDimensionKeys:
 			for _, dp := range processedDataPoints {
@@ -430,7 +435,6 @@ func (mp *MetricTranslator) TranslateDataPoints(logger *zap.Logger, sfxDataPoint
 						for _, d := range dp.Dimensions {
 							if k, ok := tr.CopyDimensions[d.Key]; ok {
 								dp.Dimensions = append(dp.Dimensions, &sfxpb.Dimension{Key: k, Value: d.Value})
-
 							}
 						}
 					}
@@ -552,12 +556,13 @@ func (mp *MetricTranslator) Shutdown() {
 	}
 }
 
-func calcNewMetricInputPairs(processedDataPoints []*sfxpb.DataPoint, tr Rule) [][2]*sfxpb.DataPoint {
+func calcNewMetricInputPairs(processedDataPoints []*sfxpb.DataPoint, tr *Rule) [][2]*sfxpb.DataPoint {
 	var operand1Pts, operand2Pts []*sfxpb.DataPoint
 	for _, dp := range processedDataPoints {
-		if dp.Metric == tr.Operand1Metric {
+		switch dp.Metric {
+		case tr.Operand1Metric:
 			operand1Pts = append(operand1Pts, dp)
-		} else if dp.Metric == tr.Operand2Metric {
+		case tr.Operand2Metric:
 			operand2Pts = append(operand2Pts, dp)
 		}
 	}
@@ -573,7 +578,7 @@ func calcNewMetricInputPairs(processedDataPoints []*sfxpb.DataPoint, tr Rule) []
 	return out
 }
 
-func dimensionsEqual(d1 []*sfxpb.Dimension, d2 []*sfxpb.Dimension) bool {
+func dimensionsEqual(d1, d2 []*sfxpb.Dimension) bool {
 	if d1 == nil && d2 == nil {
 		return true
 	}
@@ -600,7 +605,7 @@ func calculateNewMetric(
 	logger *zap.Logger,
 	operand1 *sfxpb.DataPoint,
 	operand2 *sfxpb.DataPoint,
-	tr Rule,
+	tr *Rule,
 ) *sfxpb.DataPoint {
 	v1 := ptToFloatVal(operand1)
 	if v1 == nil {
@@ -749,9 +754,9 @@ func aggregateDatapoints(
 // generate map keys.
 func stringifyDimensions(dimensions []*sfxpb.Dimension, exclusions []string) string {
 	const aggregationKeyDelimiter = "//"
-	var aggregationKeyParts = make([]string, 0, len(dimensions))
+	aggregationKeyParts := make([]string, 0, len(dimensions))
 	for _, d := range dimensions {
-		if !dimensionIn(d, exclusions) {
+		if !slices.Contains(exclusions, d.Key) {
 			aggregationKeyParts = append(aggregationKeyParts, fmt.Sprintf("%s:%s", d.Key, d.Value))
 		}
 	}
@@ -766,21 +771,11 @@ func filterDimensions(dimensions []*sfxpb.Dimension, withoutDimensions []string)
 	}
 	result := make([]*sfxpb.Dimension, 0, len(dimensions)-len(withoutDimensions))
 	for _, d := range dimensions {
-		if !dimensionIn(d, withoutDimensions) {
+		if !slices.Contains(withoutDimensions, d.Key) {
 			result = append(result, d)
 		}
 	}
 	return result
-}
-
-// dimensionIn checks if the dimension found in the dimensionsKeysFilter
-func dimensionIn(dimension *sfxpb.Dimension, dimensionsKeysFilter []string) bool {
-	for _, dk := range dimensionsKeysFilter {
-		if dimension.Key == dk {
-			return true
-		}
-	}
-	return false
 }
 
 // splitMetric renames a metric with "dimension key" == dimensionKey to mapping["dimension value"],
@@ -824,7 +819,7 @@ func convertMetricValue(logger *zap.Logger, dp *sfxpb.DataPoint, newType MetricV
 				zap.String("metric", dp.Metric))
 			return
 		}
-		var intVal = int64(*val)
+		intVal := int64(*val)
 		dp.Value = sfxpb.Datum{IntValue: &intVal}
 	case MetricValueTypeDouble:
 		val := dp.GetValue().IntValue
@@ -833,12 +828,12 @@ func convertMetricValue(logger *zap.Logger, dp *sfxpb.DataPoint, newType MetricV
 				zap.String("metric", dp.Metric))
 			return
 		}
-		var floatVal = float64(*val)
+		floatVal := float64(*val)
 		dp.Value = sfxpb.Datum{DoubleValue: &floatVal}
 	}
 }
 
-func copyMetric(tr Rule, dp *sfxpb.DataPoint, newMetricName string) *sfxpb.DataPoint {
+func copyMetric(tr *Rule, dp *sfxpb.DataPoint, newMetricName string) *sfxpb.DataPoint {
 	if tr.DimensionKey != "" {
 		var match bool
 		for _, d := range dp.Dimensions {
@@ -857,7 +852,7 @@ func copyMetric(tr Rule, dp *sfxpb.DataPoint, newMetricName string) *sfxpb.DataP
 	return newDataPoint
 }
 
-func dropDimensions(dp *sfxpb.DataPoint, rule Rule) {
+func dropDimensions(dp *sfxpb.DataPoint, rule *Rule) {
 	if rule.metricMatcher != nil && !rule.metricMatcher.Matches(dp.Metric) {
 		return
 	}
@@ -870,7 +865,8 @@ func dropDimensions(dp *sfxpb.DataPoint, rule Rule) {
 
 func filterDimensionsByValues(
 	dimensions []*sfxpb.Dimension,
-	dimensionPairs map[string]map[string]bool) []*sfxpb.Dimension {
+	dimensionPairs map[string]map[string]bool,
+) []*sfxpb.Dimension {
 	if len(dimensions) == 0 {
 		return nil
 	}

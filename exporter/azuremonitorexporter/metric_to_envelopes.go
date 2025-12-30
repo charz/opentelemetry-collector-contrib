@@ -33,9 +33,7 @@ func (packer *metricPacker) MetricToEnvelopes(metric pmetric.Metric, resource pc
 	mtd := packer.getMetricTimedData(metric)
 
 	if mtd != nil {
-
 		for _, timedDataPoint := range mtd.getTimedDataPoints() {
-
 			envelope := contracts.NewEnvelope()
 			envelope.Tags = make(map[string]string)
 			envelope.Time = toTime(timedDataPoint.timestamp).Format(time.RFC3339Nano)
@@ -56,6 +54,8 @@ func (packer *metricPacker) MetricToEnvelopes(metric pmetric.Metric, resource pc
 			applyResourcesToDataProperties(metricData.Properties, resourceAttributes)
 			applyInstrumentationScopeValueToDataProperties(metricData.Properties, instrumentationScope)
 			applyCloudTagsToEnvelope(envelope, resourceAttributes)
+			applyApplicationTagsToEnvelope(envelope, resourceAttributes)
+			applyDeviceTagsToEnvelope(envelope, resourceAttributes)
 			applyInternalSdkVersionTagToEnvelope(envelope)
 
 			setAttributesAsProperties(timedDataPoint.attributes, metricData.Properties)
@@ -67,7 +67,6 @@ func (packer *metricPacker) MetricToEnvelopes(metric pmetric.Metric, resource pc
 			packer.logger.Debug("Metric is packed", zap.String("name", dataPoint.Name), zap.Any("value", dataPoint.Value))
 
 			envelopes = append(envelopes, envelope)
-
 		}
 	}
 
@@ -172,7 +171,6 @@ func (m histogramMetric) getTimedDataPoints() []*timedMetricDataPoint {
 			timestamp:  histogramDataPoint.Timestamp(),
 			attributes: histogramDataPoint.Attributes(),
 		}
-
 	}
 	return timedDataPoints
 }
@@ -237,7 +235,6 @@ func (m summaryMetric) getTimedDataPoints() []*timedMetricDataPoint {
 			timestamp:  summaryDataPoint.Timestamp(),
 			attributes: summaryDataPoint.Attributes(),
 		}
-
 	}
 	return timedDataPoints
 }

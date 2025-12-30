@@ -25,6 +25,7 @@ import (
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/splunkhecexporter/internal/metadata"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/splunk"
+	translator "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/splunk"
 )
 
 // allow monkey patching for injecting pushLogData function in test
@@ -154,9 +155,11 @@ func (c *client) pushLogData(ctx context.Context, ld plog.Logs) error {
 
 // A guesstimated value > length of bytes of a single event.
 // Added to buffer capacity so that buffer is likely to grow by reslicing when buf.Len() > bufCap.
-const bufCapPadding = uint(4096)
-const libraryHeaderName = "X-Splunk-Instrumentation-Library"
-const profilingLibraryName = "otel.profiling"
+const (
+	bufCapPadding        = uint(4096)
+	libraryHeaderName    = "X-Splunk-Instrumentation-Library"
+	profilingLibraryName = "otel.profiling"
+)
 
 func isProfilingData(sl plog.ScopeLogs) bool {
 	return sl.Scope().Name() == profilingLibraryName
@@ -204,7 +207,7 @@ func (c *client) fillLogsBuffer(logs plog.Logs, buf buffer, is iterState) (iterS
 					b = []byte(logRecord.Body().AsString() + "\n")
 				} else {
 					// Parsing log record to Splunk event.
-					event := mapLogRecordToSplunkEvent(rl.Resource(), logRecord, c.config)
+					event := translator.LogToSplunkEvent(rl.Resource(), logRecord, c.config.OtelAttrsToHec, c.config.HecFields, c.config.Source, c.config.SourceType, c.config.Index)
 					if event == nil {
 						// TODO record this drop as a metric
 						continue
@@ -214,8 +217,7 @@ func (c *client) fillLogsBuffer(logs plog.Logs, buf buffer, is iterState) (iterS
 					var err error
 					b, err = marshalEvent(event, c.config.MaxEventSize)
 					if err != nil {
-						permanentErrors = append(permanentErrors, consumererror.NewPermanent(fmt.Errorf(
-							"dropped log event: %v, error: %w", event, err)))
+						permanentErrors = append(permanentErrors, consumererror.NewPermanent(err))
 						continue
 					}
 				}
@@ -257,13 +259,13 @@ func (c *client) fillMetricsBuffer(metrics pmetric.Metrics, buf buffer, is iterS
 				metric := sm.Metrics().At(k)
 
 				// Parsing metric record to Splunk event.
-				events := mapMetricToSplunkEvent(rm.Resource(), metric, c.config, c.logger)
+				events := translator.MetricToSplunkEvent(rm.Resource(), metric, c.logger, c.config.OtelAttrsToHec, c.config.Source, c.config.SourceType, c.config.Index)
 				tempBuf.Reset()
 				for _, event := range events {
 					// JSON encoding event and writing to buffer.
 					b, err := marshalEvent(event, c.config.MaxEventSize)
 					if err != nil {
-						permanentErrors = append(permanentErrors, consumererror.NewPermanent(fmt.Errorf("dropped metric event: %v, error: %w", event, err)))
+						permanentErrors = append(permanentErrors, consumererror.NewPermanent(err))
 						continue
 					}
 					tempBuf.Write(b)
@@ -293,7 +295,7 @@ func (c *client) fillMetricsBuffer(metrics pmetric.Metrics, buf buffer, is iterS
 	return iterState{done: true}, permanentErrors
 }
 
-func (c *client) fillMetricsBufferMultiMetrics(events []*splunk.Event, buf buffer, is iterState) (iterState, []error) {
+func (c *client) fillMetricsBufferMultiMetrics(events []*translator.Event, buf buffer, is iterState) (iterState, []error) {
 	var permanentErrors []error
 
 	for i := is.record; i < len(events); i++ {
@@ -301,7 +303,7 @@ func (c *client) fillMetricsBufferMultiMetrics(events []*splunk.Event, buf buffe
 		// JSON encoding event and writing to buffer.
 		b, jsonErr := marshalEvent(event, c.config.MaxEventSize)
 		if jsonErr != nil {
-			permanentErrors = append(permanentErrors, consumererror.NewPermanent(fmt.Errorf("dropped metric event: %v, error: %w", event, jsonErr)))
+			permanentErrors = append(permanentErrors, consumererror.NewPermanent(jsonErr))
 			continue
 		}
 		_, err := buf.Write(b)
@@ -341,12 +343,12 @@ func (c *client) fillTracesBuffer(traces ptrace.Traces, buf buffer, is iterState
 				span := ss.Spans().At(k)
 
 				// Parsing span record to Splunk event.
-				event := mapSpanToSplunkEvent(rs.Resource(), span, c.config)
+				event := translator.SpanToSplunkEvent(rs.Resource(), span, c.config.OtelAttrsToHec, c.config.Source, c.config.SourceType, c.config.Index)
 
 				// JSON encoding event and writing to buffer.
 				b, err := marshalEvent(event, c.config.MaxEventSize)
 				if err != nil {
-					permanentErrors = append(permanentErrors, consumererror.NewPermanent(fmt.Errorf("dropped span events: %v, error: %w", event, err)))
+					permanentErrors = append(permanentErrors, consumererror.NewPermanent(err))
 					continue
 				}
 
@@ -382,7 +384,7 @@ func (c *client) pushMultiMetricsDataInBatches(ctx context.Context, md pmetric.M
 	is := iterState{}
 
 	var permanentErrors []error
-	var events []*splunk.Event
+	var events []*translator.Event
 	for i := 0; i < md.ResourceMetrics().Len(); i++ {
 		rm := md.ResourceMetrics().At(i)
 		for j := 0; j < rm.ScopeMetrics().Len(); j++ {
@@ -391,12 +393,12 @@ func (c *client) pushMultiMetricsDataInBatches(ctx context.Context, md pmetric.M
 				metric := sm.Metrics().At(k)
 
 				// Parsing metric record to Splunk event.
-				events = append(events, mapMetricToSplunkEvent(rm.Resource(), metric, c.config, c.logger)...)
+				events = append(events, translator.MetricToSplunkEvent(rm.Resource(), metric, c.logger, c.config.OtelAttrsToHec, c.config.Source, c.config.SourceType, c.config.Index)...)
 			}
 		}
 	}
 
-	merged, err := mergeEventsToMultiMetricFormat(events)
+	merged, err := translator.MergeEventsToMultiMetricFormat(events)
 	if err != nil {
 		return consumererror.NewPermanent(fmt.Errorf("error merging events: %w", err))
 	}
@@ -611,7 +613,6 @@ func (c *client) stop(context.Context) error {
 }
 
 func (c *client) start(ctx context.Context, host component.Host) (err error) {
-
 	httpClient, err := buildHTTPClient(ctx, c.config, host, c.telemetrySettings)
 	if err != nil {
 		return err
@@ -636,8 +637,7 @@ func (c *client) start(ctx context.Context, host component.Host) (err error) {
 }
 
 func checkHecHealth(ctx context.Context, client *http.Client, healthCheckURL *url.URL) error {
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthCheckURL.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthCheckURL.String(), http.NoBody)
 	if err != nil {
 		return consumererror.NewPermanent(err)
 	}
@@ -658,8 +658,8 @@ func checkHecHealth(ctx context.Context, client *http.Client, healthCheckURL *ur
 
 func buildHTTPClient(ctx context.Context, config *Config, host component.Host, telemetrySettings component.TelemetrySettings) (*http.Client, error) {
 	// we handle compression explicitly.
-	config.ClientConfig.Compression = ""
-	return config.ToClient(ctx, host, telemetrySettings)
+	config.Compression = ""
+	return config.ToClient(ctx, host.GetExtensions(), telemetrySettings)
 }
 
 func buildHTTPHeaders(config *Config, buildInfo component.BuildInfo) map[string]string {
@@ -678,7 +678,7 @@ func buildHTTPHeaders(config *Config, buildInfo component.BuildInfo) map[string]
 }
 
 // marshalEvent marshals an event to JSON
-func marshalEvent(event *splunk.Event, sizeLimit uint) ([]byte, error) {
+func marshalEvent(event *translator.Event, sizeLimit uint) ([]byte, error) {
 	b, err := json.Marshal(event)
 	if err != nil {
 		return nil, err

@@ -6,6 +6,7 @@ package tests // import "github.com/open-telemetry/opentelemetry-collector-contr
 import (
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,9 +68,10 @@ func TestSyslogComplementaryRFC5424(t *testing.T) {
 }
 
 func TestSyslogComplementaryRFC3164(t *testing.T) {
+	t.Skip("https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/38238")
 	expectedData := []expectedDataType{
 		{
-			message:        "<34>Oct 11 22:14:15 mymachine su: 'su root' failed for lonvick on /dev/pts/8",
+			message:        "<34>Oct 11 2023 22:14:15 mymachine su: 'su root' failed for lonvick on /dev/pts/8",
 			timestamp:      1697062455000000000,
 			severityNumber: 18,
 			severityText:   "crit",
@@ -82,7 +84,7 @@ func TestSyslogComplementaryRFC3164(t *testing.T) {
 			},
 		},
 		{
-			message:        "<19>Oct 11 22:14:15 - -",
+			message:        "<19>Oct 11 2023 22:14:15 - -",
 			timestamp:      1697062455000000000,
 			severityNumber: 17,
 			severityText:   "err",
@@ -138,7 +140,7 @@ service:
         - syslog/client`
 
 	collector := testbed.NewInProcessCollector(componentFactories(t))
-	_, err := collector.PrepareConfig(fmt.Sprintf(config, rfc, inputPort, rfc, port))
+	_, err := collector.PrepareConfig(t, fmt.Sprintf(config, rfc, inputPort, rfc, port))
 
 	require.NoError(t, err)
 	err = collector.Start(testbed.StartParams{
@@ -154,7 +156,7 @@ service:
 
 	// prepare data
 
-	message := ""
+	var message strings.Builder
 	expectedAttributes := []map[string]any{}
 	expectedLogs := plog.NewLogs()
 	rl := expectedLogs.ResourceLogs().AppendEmpty()
@@ -167,7 +169,7 @@ service:
 		lr.SetSeverityText(e.severityText)
 		lr.SetTimestamp(e.timestamp)
 		expectedAttributes = append(expectedAttributes, e.attributes)
-		message += e.message + "\n"
+		message.WriteString(e.message + "\n")
 	}
 
 	// Prepare client
@@ -175,7 +177,7 @@ service:
 	require.NoError(t, err)
 
 	// Write requests
-	fmt.Fprint(conn, message)
+	fmt.Fprint(conn, message.String())
 
 	// Wait for all messages
 	for len(backend.ReceivedLogs) < 1 {

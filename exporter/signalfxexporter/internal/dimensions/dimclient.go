@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -55,8 +56,12 @@ type DimensionClient struct {
 	logUpdates       bool
 	logger           *zap.Logger
 	metricsConverter translation.MetricsConverter
+	// DefaultProperties will set property key/values unless set explicitly
+	DefaultProperties map[string]string
 	// ExcludeProperties will filter DimensionUpdate content to not submit undesired metadata.
 	ExcludeProperties []dpfilters.PropertyFilter
+	// dropTags specifies whether tags should be omitted or not. Default value is false.
+	dropTags bool
 }
 
 type queuedDimension struct {
@@ -75,12 +80,14 @@ type DimensionClientOptions struct {
 	// buffer a fixed number of updates.
 	MaxBuffered         int
 	MetricsConverter    translation.MetricsConverter
+	DefaultProperties   map[string]string
 	ExcludeProperties   []dpfilters.PropertyFilter
 	MaxConnsPerHost     int
 	MaxIdleConns        int
 	MaxIdleConnsPerHost int
 	IdleConnTimeout     time.Duration
 	Timeout             time.Duration
+	DropTags            bool
 }
 
 // NewDimensionClient returns a new client
@@ -116,7 +123,9 @@ func NewDimensionClient(options DimensionClientOptions) *DimensionClient {
 		logger:            options.Logger,
 		logUpdates:        options.LogUpdates,
 		metricsConverter:  options.MetricsConverter,
+		DefaultProperties: options.DefaultProperties,
 		ExcludeProperties: options.ExcludeProperties,
+		dropTags:          options.DropTags,
 	}
 }
 
@@ -175,9 +184,7 @@ func (dc *DimensionClient) acceptDimension(dimUpdate *DimensionUpdate) error {
 func mergeProperties(propMaps ...map[string]*string) map[string]*string {
 	out := map[string]*string{}
 	for _, propMap := range propMaps {
-		for k, v := range propMap {
-			out[k] = v
-		}
+		maps.Copy(out, propMap)
 	}
 	return out
 }
@@ -188,9 +195,7 @@ func mergeProperties(propMaps ...map[string]*string) map[string]*string {
 func mergeTags(tagSets ...map[string]bool) map[string]bool {
 	out := map[string]bool{}
 	for _, tagSet := range tagSets {
-		for k, v := range tagSet {
-			out[k] = v
-		}
+		maps.Copy(out, tagSet)
 	}
 	return out
 }
@@ -230,37 +235,38 @@ func (dc *DimensionClient) handleDimensionUpdate(ctx context.Context, dimUpdate 
 	)
 
 	req, err = dc.makePatchRequest(ctx, dimUpdate)
-
 	if err != nil {
 		return err
 	}
 
 	req = req.WithContext(
 		context.WithValue(req.Context(), RequestFailedCallbackKey, RequestFailedCallback(func(statusCode int, err error) {
-			if statusCode >= 400 && statusCode < 500 && statusCode != 404 {
-				dc.logger.Error(
-					"Unable to update dimension, not retrying",
-					zap.Error(err),
-					zap.String("URL", sanitize.URL(req.URL)),
-					zap.String("dimensionUpdate", dimUpdate.String()),
-					zap.Int("statusCode", statusCode),
-				)
-
-				// Don't retry if it is a 4xx error (except 404) since these
-				// imply an input/auth error, which is not going to be remedied
-				// by retrying.
-				// 404 errors are special because they can occur due to races
-				// within the dimension patch endpoint.
-				return
+			retry := false
+			retryMsg := "not retrying"
+			if statusCode == 400 && len(dimUpdate.Tags) > 0 {
+				// It's possible that number of tags is too large. In this case,
+				// we should retry the request without tags to update the dimension properties at least.
+				dimUpdate.Tags = nil
+				retry = true
+				retryMsg = "retrying without tags"
+			} else if statusCode == 404 || statusCode >= 500 {
+				// Retry on 5xx server errors or 404s which can occur due to races within the dimension patch endpoint.
+				retry = true
+				retryMsg = "retrying"
 			}
 
 			dc.logger.Error(
-				"Unable to update dimension, retrying",
+				"Unable to update dimension, "+retryMsg,
 				zap.Error(err),
 				zap.String("URL", sanitize.URL(req.URL)),
 				zap.String("dimensionUpdate", dimUpdate.String()),
 				zap.Int("statusCode", statusCode),
 			)
+
+			if !retry {
+				return
+			}
+
 			// The retry is meant to provide some measure of robustness against
 			// temporary API failures.  If the API is down for significant
 			// periods of time, dimension updates will probably eventually back
@@ -330,7 +336,7 @@ func (dc *DimensionClient) makePatchRequest(ctx context.Context, dim *DimensionU
 
 	req, err := http.NewRequestWithContext(
 		ctx,
-		"PATCH",
+		http.MethodPatch,
 		strings.TrimRight(url.String(), "/")+"/_/sfxagent",
 		bytes.NewReader(json))
 	if err != nil {
@@ -344,6 +350,11 @@ func (dc *DimensionClient) makePatchRequest(ctx context.Context, dim *DimensionU
 }
 
 func (dc *DimensionClient) filterDimensionUpdate(update *DimensionUpdate) *DimensionUpdate {
+	// clear tags list if dropTags option is set
+	if dc.dropTags {
+		update.Tags = nil
+	}
+
 	for _, excludeRule := range dc.ExcludeProperties {
 		if excludeRule.DimensionName.Matches(update.Name) && excludeRule.DimensionValue.Matches(update.Value) {
 			for k, v := range update.Properties {

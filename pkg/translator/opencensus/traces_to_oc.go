@@ -13,7 +13,8 @@ import (
 	"go.opencensus.io/trace"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
-	conventions "go.opentelemetry.io/collector/semconv/v1.12.0"
+	conventionsv121 "go.opentelemetry.io/otel/semconv/v1.21.0"
+	conventions "go.opentelemetry.io/otel/semconv/v1.38.0"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal/occonventions"
@@ -21,8 +22,11 @@ import (
 )
 
 // ResourceSpansToOC may be used only by OpenCensus receiver and exporter implementations.
+//
 // Deprecated: Use ptrace.Traces.
 // TODO: move this function to OpenCensus package.
+//
+// Deprecated: this functionality is no longer maintained and will be removed.
 func ResourceSpansToOC(rs ptrace.ResourceSpans) (*occommon.Node, *ocresource.Resource, []*octrace.Span) {
 	node, resource := internalResourceToOC(rs.Resource())
 	ilss := rs.ScopeSpans()
@@ -64,7 +68,7 @@ func spanToOC(span ptrace.Span) *octrace.Span {
 				DroppedAttributesCount: 0,
 			}
 		}
-		attributes.AttributeMap[conventions.OtelStatusCode] = statusAttr
+		attributes.AttributeMap[string(conventions.OTelStatusCodeKey)] = statusAttr
 	}
 
 	return &octrace.Span{
@@ -102,10 +106,9 @@ func attributesMapToOCAttributeMap(attributes pcommon.Map) map[string]*octrace.A
 	}
 
 	ocAttributes := make(map[string]*octrace.AttributeValue, attributes.Len())
-	attributes.Range(func(k string, v pcommon.Value) bool {
+	for k, v := range attributes.All() {
 		ocAttributes[k] = attributeValueToOC(v)
-		return true
-	})
+	}
 	return ocAttributes
 }
 
@@ -159,7 +162,6 @@ func spanKindToOCAttribute(kind ptrace.SpanKind) *octrace.AttributeValue {
 	case ptrace.SpanKindServer: // explicitly handled as SpanKind
 	case ptrace.SpanKindClient: // explicitly handled as SpanKind
 	default:
-
 	}
 
 	if string(ocKind) == "" {
@@ -264,9 +266,9 @@ func eventToOC(event ptrace.SpanEvent) *octrace.Span_TimeEvent {
 	// Consider TimeEvent to be of MessageEvent type if all and only relevant attributes are set
 	ocMessageEventAttrs := []string{
 		"message.type",
-		conventions.AttributeMessagingMessageID,
-		conventions.AttributeMessagingMessagePayloadSizeBytes,
-		conventions.AttributeMessagingMessagePayloadCompressedSizeBytes,
+		string(conventions.MessagingMessageIDKey),
+		string(conventionsv121.MessagingMessagePayloadSizeBytesKey),
+		string(conventionsv121.MessagingMessagePayloadCompressedSizeBytesKey),
 	}
 	// TODO: Find a better way to check for message_event. Maybe use the event.Name.
 	if attrs.Len() == len(ocMessageEventAttrs) {
@@ -287,9 +289,9 @@ func eventToOC(event ptrace.SpanEvent) *octrace.Span_TimeEvent {
 				Value: &octrace.Span_TimeEvent_MessageEvent_{
 					MessageEvent: &octrace.Span_TimeEvent_MessageEvent{
 						Type:             octrace.Span_TimeEvent_MessageEvent_Type(ocMessageEventTypeVal),
-						Id:               uint64(ocMessageEventAttrValues[conventions.AttributeMessagingMessageID].Int()),
-						UncompressedSize: uint64(ocMessageEventAttrValues[conventions.AttributeMessagingMessagePayloadSizeBytes].Int()),
-						CompressedSize:   uint64(ocMessageEventAttrValues[conventions.AttributeMessagingMessagePayloadCompressedSizeBytes].Int()),
+						Id:               uint64(ocMessageEventAttrValues[string(conventions.MessagingMessageIDKey)].Int()),
+						UncompressedSize: uint64(ocMessageEventAttrValues[string(conventionsv121.MessagingMessagePayloadSizeBytesKey)].Int()),
+						CompressedSize:   uint64(ocMessageEventAttrValues[string(conventionsv121.MessagingMessagePayloadCompressedSizeBytesKey)].Int()),
 					},
 				},
 			}

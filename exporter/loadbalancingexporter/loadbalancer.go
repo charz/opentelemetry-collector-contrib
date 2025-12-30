@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -45,17 +46,17 @@ type loadBalancer struct {
 func newLoadBalancer(logger *zap.Logger, cfg component.Config, factory componentFactory, telemetry *metadata.TelemetryBuilder) (*loadBalancer, error) {
 	oCfg := cfg.(*Config)
 
-	var count = 0
-	if oCfg.Resolver.DNS != nil {
+	count := 0
+	if oCfg.Resolver.DNS.HasValue() {
 		count++
 	}
-	if oCfg.Resolver.Static != nil {
+	if oCfg.Resolver.Static.HasValue() {
 		count++
 	}
-	if oCfg.Resolver.AWSCloudMap != nil {
+	if oCfg.Resolver.AWSCloudMap.HasValue() {
 		count++
 	}
-	if oCfg.Resolver.K8sSvc != nil {
+	if oCfg.Resolver.K8sSvc.HasValue() {
 		count++
 	}
 	if count > 1 {
@@ -63,45 +64,48 @@ func newLoadBalancer(logger *zap.Logger, cfg component.Config, factory component
 	}
 
 	var res resolver
-	if oCfg.Resolver.Static != nil {
+	if oCfg.Resolver.Static.HasValue() {
 		var err error
 		res, err = newStaticResolver(
-			oCfg.Resolver.Static.Hostnames,
+			oCfg.Resolver.Static.Get().Hostnames,
 			telemetry,
 		)
 		if err != nil {
 			return nil, err
 		}
 	}
-	if oCfg.Resolver.DNS != nil {
+	if oCfg.Resolver.DNS.HasValue() {
 		dnsLogger := logger.With(zap.String("resolver", "dns"))
 
 		var err error
+		dnsResolver := oCfg.Resolver.DNS.Get()
 		res, err = newDNSResolver(
 			dnsLogger,
-			oCfg.Resolver.DNS.Hostname,
-			oCfg.Resolver.DNS.Port,
-			oCfg.Resolver.DNS.Interval,
-			oCfg.Resolver.DNS.Timeout,
+			dnsResolver.Hostname,
+			dnsResolver.Port,
+			dnsResolver.Interval,
+			dnsResolver.Timeout,
 			telemetry,
 		)
 		if err != nil {
 			return nil, err
 		}
 	}
-	if oCfg.Resolver.K8sSvc != nil {
+	if oCfg.Resolver.K8sSvc.HasValue() {
 		k8sLogger := logger.With(zap.String("resolver", "k8s service"))
 
 		clt, err := newInClusterClient()
 		if err != nil {
 			return nil, err
 		}
+		k8sSvcResolver := oCfg.Resolver.K8sSvc.Get()
 		res, err = newK8sResolver(
 			clt,
 			k8sLogger,
-			oCfg.Resolver.K8sSvc.Service,
-			oCfg.Resolver.K8sSvc.Ports,
-			oCfg.Resolver.K8sSvc.Timeout,
+			k8sSvcResolver.Service,
+			k8sSvcResolver.Ports,
+			k8sSvcResolver.Timeout,
+			k8sSvcResolver.ReturnHostnames,
 			telemetry,
 		)
 		if err != nil {
@@ -109,17 +113,18 @@ func newLoadBalancer(logger *zap.Logger, cfg component.Config, factory component
 		}
 	}
 
-	if oCfg.Resolver.AWSCloudMap != nil {
+	if oCfg.Resolver.AWSCloudMap.HasValue() {
 		awsCloudMapLogger := logger.With(zap.String("resolver", "aws_cloud_map"))
+		awsCloudMapResolver := oCfg.Resolver.AWSCloudMap.Get()
 		var err error
 		res, err = newCloudMapResolver(
 			awsCloudMapLogger,
-			&oCfg.Resolver.AWSCloudMap.NamespaceName,
-			&oCfg.Resolver.AWSCloudMap.ServiceName,
-			oCfg.Resolver.AWSCloudMap.Port,
-			&oCfg.Resolver.AWSCloudMap.HealthStatus,
-			oCfg.Resolver.AWSCloudMap.Interval,
-			oCfg.Resolver.AWSCloudMap.Timeout,
+			&awsCloudMapResolver.NamespaceName,
+			&awsCloudMapResolver.ServiceName,
+			awsCloudMapResolver.Port,
+			&awsCloudMapResolver.HealthStatus,
+			awsCloudMapResolver.Interval,
+			awsCloudMapResolver.Timeout,
 			telemetry,
 		)
 		if err != nil {
@@ -196,7 +201,7 @@ func (lb *loadBalancer) removeExtraExporters(ctx context.Context, endpoints []st
 		endpointsWithPort[i] = endpointWithPort(e)
 	}
 	for existing := range lb.exporters {
-		if !endpointFound(existing, endpointsWithPort) {
+		if !slices.Contains(endpointsWithPort, existing) {
 			exp := lb.exporters[existing]
 			// Shutdown the exporter asynchronously to avoid blocking the resolver
 			go func() {
@@ -207,19 +212,13 @@ func (lb *loadBalancer) removeExtraExporters(ctx context.Context, endpoints []st
 	}
 }
 
-func endpointFound(endpoint string, endpoints []string) bool {
-	for _, candidate := range endpoints {
-		if candidate == endpoint {
-			return true
-		}
-	}
-
-	return false
-}
-
 func (lb *loadBalancer) Shutdown(ctx context.Context) error {
 	err := lb.res.shutdown(ctx)
 	lb.stopped = true
+
+	for _, e := range lb.exporters {
+		err = errors.Join(err, e.Shutdown(ctx))
+	}
 	return err
 }
 

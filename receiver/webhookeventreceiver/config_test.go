@@ -4,6 +4,7 @@
 package webhookeventreceiver
 
 import (
+	"bufio"
 	"path/filepath"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
+	"go.opentelemetry.io/collector/confmap/xconfmap"
 	"go.uber.org/multierr"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/webhookeventreceiver/internal/metadata"
@@ -106,7 +108,80 @@ func TestValidateConfig(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.desc, func(t *testing.T) {
 			err := test.conf.Validate()
-			require.ErrorContains(t, err, test.expect.Error())
+			if test.expect != nil {
+				require.ErrorContains(t, err, test.expect.Error())
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestMaxRequestBodySizeAutoCorrection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		desc     string
+		conf     Config
+		expected int64
+	}{
+		{
+			desc: "MaxRequestBodySize is 0, should be set to default 20MB",
+			conf: Config{
+				ServerConfig: confighttp.ServerConfig{
+					Endpoint:           "localhost:0",
+					MaxRequestBodySize: 0,
+				},
+			},
+			expected: 20 * 1024 * 1024, // 20MB default from confighttp
+		},
+		{
+			desc: "MaxRequestBodySize is set to small value, should remain unchanged",
+			conf: Config{
+				ServerConfig: confighttp.ServerConfig{
+					Endpoint:           "localhost:0",
+					MaxRequestBodySize: 10,
+				},
+			},
+			expected: 10, // No minimum enforcement, user's value is preserved
+		},
+		{
+			desc: "MaxRequestBodySize is exactly 64KB, should remain unchanged",
+			conf: Config{
+				ServerConfig: confighttp.ServerConfig{
+					Endpoint:           "localhost:0",
+					MaxRequestBodySize: int64(bufio.MaxScanTokenSize),
+				},
+			},
+			expected: int64(bufio.MaxScanTokenSize),
+		},
+		{
+			desc: "MaxRequestBodySize is greater than 64KB, should remain unchanged",
+			conf: Config{
+				ServerConfig: confighttp.ServerConfig{
+					Endpoint:           "localhost:0",
+					MaxRequestBodySize: 65538,
+				},
+			},
+			expected: 65538,
+		},
+		{
+			desc: "MaxRequestBodySize is way greater than 64KB, should remain unchanged",
+			conf: Config{
+				ServerConfig: confighttp.ServerConfig{
+					Endpoint:           "localhost:0",
+					MaxRequestBodySize: 100 * 1024 * 1024, // 100MB
+				},
+			},
+			expected: 100 * 1024 * 1024, // 100MB
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.desc, func(t *testing.T) {
+			err := test.conf.Validate()
+			require.NoError(t, err)
+			require.Equal(t, test.expected, test.conf.MaxRequestBodySize)
 		})
 	}
 }
@@ -140,7 +215,7 @@ func TestLoadConfig(t *testing.T) {
 	factory := NewFactory()
 	conf := factory.CreateDefaultConfig()
 	require.NoError(t, cmNoStr.Unmarshal(conf))
-	require.NoError(t, component.ValidateConfig(conf))
+	require.NoError(t, xconfmap.Validate(conf))
 
 	require.Equal(t, expect, conf)
 }
